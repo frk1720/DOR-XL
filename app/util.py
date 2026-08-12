@@ -4,6 +4,10 @@ import requests
 
 # Load API key from text file named api.key
 def load_api_key() -> str:
+    env_key = os.environ.get("USER_API_KEY")
+    if env_key:
+        return env_key.strip()
+        
     if os.path.exists("api.key"):
         with open("api.key", "r", encoding="utf8") as f:
             api_key = f.read().strip()
