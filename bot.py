@@ -104,7 +104,9 @@ HELP_TEXT = (
     "<b>Akun</b>\n"
     "/login &lt;nomor&gt; — Login dengan nomor XL (contoh: /login 6281234567890)\n"
     "/status — Cek saldo &amp; info akun\n"
-    "/logout — Keluar dari akun\n\n"
+    "/accounts — Lihat semua akun tersimpan\n"
+    "/switch &lt;nomor&gt; — Ganti akun aktif\n"
+    "/logout [nomor] — Keluar dari akun\n\n"
     "<b>Info</b>\n"
     "/paket — Lihat paket aktif\n"
     "/riwayat — Riwayat transaksi\n"
@@ -199,9 +201,44 @@ def handle_otp(chat_id: int, uid: int, code: str) -> bool:
     return True
 
 
-def cmd_logout(chat_id: int, uid: int, _args: str):
-    sessions.logout(uid)
-    send_message(chat_id, "Anda telah logout.")
+def cmd_logout(chat_id: int, uid: int, args: str):
+    num = args.strip()
+    if sessions.logout(uid, num):
+        if num:
+            send_message(chat_id, f"Nomor {num} berhasil dihapus dari perangkat ini.")
+        else:
+            send_message(chat_id, "Akun yang aktif berhasil dihapus dari perangkat ini.")
+    else:
+        send_message(chat_id, "Gagal logout. Nomor tidak ditemukan di perangkat ini.")
+
+def cmd_accounts(chat_id: int, uid: int, _args: str):
+    accounts = sessions.get_all_accounts(uid)
+    if not accounts:
+        send_message(chat_id, "Belum ada akun yang tersimpan. Gunakan /login &lt;nomor&gt;.")
+        return
+        
+    sess = sessions.get_session(uid)
+    active = sess.get("active_number")
+    
+    lines = ["<b>Daftar Akun Tersimpan:</b>\n"]
+    for i, (num, acc) in enumerate(accounts.items(), 1):
+        sub = acc.get("profile", {}).get("subscription_type", "-")
+        mark = "✅" if num == active else ""
+        lines.append(f"{i}. {num} ({sub}) {mark}")
+        
+    lines.append("\nGanti akun dengan: /switch &lt;nomor&gt;")
+    send_message(chat_id, "\n".join(lines))
+
+def cmd_switch(chat_id: int, uid: int, args: str):
+    num = args.strip()
+    if not num:
+        send_message(chat_id, "Gunakan: /switch &lt;nomor&gt;")
+        return
+        
+    if sessions.switch_account(uid, num):
+        send_message(chat_id, f"✅ Berhasil ganti akun! Sekarang menggunakan <b>{num}</b>.")
+    else:
+        send_message(chat_id, f"Nomor {num} tidak ditemukan di daftar akun Anda. Cek /accounts.")
 
 
 def cmd_status(chat_id: int, uid: int, _args: str):
@@ -518,6 +555,8 @@ COMMANDS = {
     "/help": cmd_help,
     "/login": cmd_login,
     "/logout": cmd_logout,
+    "/accounts": cmd_accounts,
+    "/switch": cmd_switch,
     "/status": cmd_status,
     "/paket": cmd_paket,
     "/packages": cmd_paket,

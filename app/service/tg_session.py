@@ -35,7 +35,7 @@ class TgSessionManager:
     """Per-Telegram-user session manager (multi-user safe).
 
     Keeps tokens in memory and persists refresh tokens to tg_sessions.json
-    so users stay logged in across bot restarts.
+    so users stay logged in across bot restarts. Supports multiple accounts.
     """
 
     def __init__(self, api_key: str):
@@ -43,24 +43,50 @@ class TgSessionManager:
         self.sessions = {}  # telegram_user_id -> session dict
         store = _load_store()
         for uid, u in store["users"].items():
-            self.sessions[int(uid)] = {
-                "refresh_token": u.get("refresh_token"),
-                "tokens": None,
-                "profile": u.get("profile"),
-                "last_refresh": 0,
+            # Legacy migration
+            if "refresh_token" in u:
+                number = u.get("profile", {}).get("number", "unknown")
+                u = {
+                    "active_number": number,
+                    "accounts": {
+                        number: {
+                            "refresh_token": u["refresh_token"],
+                            "profile": u.get("profile"),
+                        }
+                    }
+                }
+
+            sess = {
+                "active_number": u.get("active_number"),
+                "accounts": {},
                 "pending_contact": None,
                 "pending_wallet": None,
             }
+            for num, acc in u.get("accounts", {}).items():
+                sess["accounts"][num] = {
+                    "refresh_token": acc.get("refresh_token"),
+                    "tokens": None,
+                    "profile": acc.get("profile"),
+                    "last_refresh": 0,
+                }
+            self.sessions[int(uid)] = sess
 
     # ---------- persistence ----------
     def _persist(self, uid: int):
         store = _load_store()
         sess = self.sessions.get(uid)
-        if sess and sess.get("refresh_token"):
-            store["users"][str(uid)] = {
-                "refresh_token": sess["refresh_token"],
-                "profile": sess.get("profile"),
+        if sess and sess.get("accounts"):
+            u_store = {
+                "active_number": sess.get("active_number"),
+                "accounts": {}
             }
+            for num, acc in sess["accounts"].items():
+                if acc.get("refresh_token"):
+                    u_store["accounts"][num] = {
+                        "refresh_token": acc["refresh_token"],
+                        "profile": acc.get("profile")
+                    }
+            store["users"][str(uid)] = u_store
         else:
             store["users"].pop(str(uid), None)
         _save_store(store)
@@ -69,74 +95,117 @@ class TgSessionManager:
     def get_session(self, uid: int) -> dict:
         if uid not in self.sessions:
             self.sessions[uid] = {
-                "refresh_token": None,
-                "tokens": None,
-                "profile": None,
-                "last_refresh": 0,
+                "active_number": None,
+                "accounts": {},
                 "pending_contact": None,
                 "pending_wallet": None,
             }
         return self.sessions[uid]
 
     def is_logged_in(self, uid: int) -> bool:
-        return bool(self.sessions.get(uid, {}).get("refresh_token"))
+        sess = self.get_session(uid)
+        active = sess.get("active_number")
+        if not active or active not in sess.get("accounts", {}):
+            return False
+        return bool(sess["accounts"][active].get("refresh_token"))
 
     def login(self, uid: int, tokens: dict, number: str = ""):
         sess = self.get_session(uid)
-        sess["refresh_token"] = tokens["refresh_token"]
-        sess["tokens"] = tokens
         profile_data = get_profile(self.api_key, tokens["access_token"], tokens["id_token"])
+        
+        prof = {
+            "number": number,
+            "subscriber_id": "",
+            "subscription_type": "",
+        }
         if profile_data and "profile" in profile_data:
             p = profile_data["profile"]
-            sess["profile"] = {
-                "number": p.get("msisdn") or number,
-                "subscriber_id": p.get("subscriber_id", ""),
-                "subscription_type": p.get("subscription_type", ""),
-            }
-        elif number:
-            sess["profile"] = {
-                "number": number,
-                "subscriber_id": "",
-                "subscription_type": "",
-            }
-        sess["last_refresh"] = int(time.time())
+            prof["number"] = p.get("msisdn") or number
+            prof["subscriber_id"] = p.get("subscriber_id", "")
+            prof["subscription_type"] = p.get("subscription_type", "")
+            
+        active_num = prof["number"]
+        if not active_num:
+            active_num = "unknown"
+            
+        sess["accounts"][active_num] = {
+            "refresh_token": tokens["refresh_token"],
+            "tokens": tokens,
+            "profile": prof,
+            "last_refresh": int(time.time()),
+        }
+        sess["active_number"] = active_num
         self._persist(uid)
         return sess
 
-    def logout(self, uid: int):
-        self.sessions.pop(uid, None)
-        self._persist(uid)
+    def get_all_accounts(self, uid: int) -> dict:
+        sess = self.get_session(uid)
+        return sess.get("accounts", {})
+        
+    def switch_account(self, uid: int, number: str) -> bool:
+        sess = self.get_session(uid)
+        if number in sess.get("accounts", {}):
+            sess["active_number"] = number
+            self._persist(uid)
+            return True
+        return False
+
+    def logout(self, uid: int, number: str = ""):
+        sess = self.get_session(uid)
+        if not number:
+            number = sess.get("active_number")
+            
+        if number in sess.get("accounts", {}):
+            del sess["accounts"][number]
+            
+            # Update active_number
+            if sess.get("active_number") == number:
+                if sess["accounts"]:
+                    sess["active_number"] = list(sess["accounts"].keys())[0]
+                else:
+                    sess["active_number"] = None
+            self._persist(uid)
+            return True
+        return False
 
     def get_tokens(self, uid: int) -> dict | None:
-        """Return valid tokens for a telegram user, refreshing when needed."""
+        """Return valid tokens for a telegram user's active account, refreshing when needed."""
         with _lock:
             sess = self.sessions.get(uid)
-            if not sess or not sess.get("refresh_token"):
+            if not sess:
+                return None
+            active = sess.get("active_number")
+            if not active or active not in sess.get("accounts", {}):
+                return None
+                
+            acc = sess["accounts"][active]
+            if not acc.get("refresh_token"):
                 return None
 
             need_refresh = (
-                sess.get("tokens") is None
-                or (int(time.time()) - sess.get("last_refresh", 0)) > 300
+                acc.get("tokens") is None
+                or (int(time.time()) - acc.get("last_refresh", 0)) > 300
             )
             if need_refresh:
-                subscriber_id = ""
-                if sess.get("profile"):
-                    subscriber_id = sess["profile"].get("subscriber_id", "")
-                tokens = get_new_token(self.api_key, sess["refresh_token"], subscriber_id)
+                subscriber_id = acc.get("profile", {}).get("subscriber_id", "")
+                tokens = get_new_token(self.api_key, acc["refresh_token"], subscriber_id)
                 if not tokens:
                     return None
-                sess["tokens"] = tokens
-                sess["refresh_token"] = tokens["refresh_token"]
-                sess["last_refresh"] = int(time.time())
+                acc["tokens"] = tokens
+                acc["refresh_token"] = tokens["refresh_token"]
+                acc["last_refresh"] = int(time.time())
                 self._persist(uid)
 
-            return sess["tokens"]
+            return acc["tokens"]
 
     def get_profile_info(self, uid: int) -> dict | None:
         sess = self.sessions.get(uid)
         if not sess:
             return None
-        return sess.get("profile")
+        active = sess.get("active_number")
+        if not active or active not in sess.get("accounts", {}):
+            return None
+        return sess["accounts"][active].get("profile")
 
 
 TgSessionInstance = None
