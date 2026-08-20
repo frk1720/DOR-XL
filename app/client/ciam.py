@@ -212,18 +212,29 @@ def get_new_token(api_key: str, refresh_token: str, subscriber_id: str) -> str:
     }
 
     print("Refreshing token...")
-    resp = requests.post(url, headers=headers, data=data, timeout=30)
+    try:
+        resp = requests.post(url, headers=headers, data=data, timeout=30)
+    except requests.RequestException as exc:
+        raise RuntimeError(f"CIAM request gagal: {exc.__class__.__name__}") from exc
+
     if resp.status_code == 400:
-        if resp.json().get("error_description") != "Session not active":
-            print(f"Failed to refresh token: {resp.status_code} - {resp.text}")
-            return None
+        try:
+            error_body = resp.json()
+        except ValueError:
+            error_body = {}
+
+        error_description = error_body.get("error_description", "")
+        if error_description != "Session not active":
+            if error_description:
+                raise RuntimeError(f"CIAM menolak refresh token: {error_description}")
+            raise RuntimeError(f"CIAM menolak refresh token (HTTP {resp.status_code})")
 
         if subscriber_id == "":
-            raise ValueError("Subscriber ID is missing")
+            raise ValueError("Subscriber ID di Supabase kosong")
         
         exchange_code = extend_session(subscriber_id)
         if exchange_code is None:
-            raise ValueError("Failed to get exchange code")
+            raise ValueError("CIAM gagal mendapatkan exchange code")
         
         extend_result = submit_otp(
             api_key,
@@ -233,19 +244,20 @@ def get_new_token(api_key: str, refresh_token: str, subscriber_id: str) -> str:
         )
         
         if extend_result is None:
-            if "Invalid refresh token" in resp.text:
-                raise ValueError("Refresh token is invalid or expired. Please login again.")
-
-            raise ValueError("Failed to submit OTP after extending session")
+            raise ValueError("CIAM gagal memperpanjang session; login ulang diperlukan")
         
         return extend_result
 
-    resp.raise_for_status()
+    if resp.status_code >= 400:
+        raise RuntimeError(f"CIAM mengembalikan HTTP {resp.status_code}")
 
-    body = resp.json()
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        raise RuntimeError("CIAM mengembalikan respons tidak valid") from exc
     
     if "id_token" not in body:
-        raise ValueError("ID token not found in response")
+        raise RuntimeError("CIAM tidak mengembalikan id_token")
     if "error" in body:
         raise ValueError(f"Error in response: {body['error']} - {body.get('error_description', '')}")
     

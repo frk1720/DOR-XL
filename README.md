@@ -100,6 +100,10 @@ Setelah login Telegram berhasil, bot sekarang otomatis memperbarui
 Row tersebut harus sudah dibuat lebih dulu dan memiliki `option_code`; proses
 sinkronisasi tidak membuat konfigurasi auto-renew baru secara otomatis.
 
+Jika auto-renew gagal saat refresh token, kolom `last_error` sekarang menyimpan
+alasan CIAM yang sudah disanitasi, misalnya `CIAM menolak refresh token: ...`.
+Isi token tidak pernah ditulis ke log atau pesan Telegram.
+
 # Info
 
 ## PS for Certain Indonesian mobile internet service provider
