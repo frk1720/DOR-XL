@@ -20,8 +20,8 @@ if not BASE_CIAM_URL:
     raise ValueError("BASE_CIAM_URL environment variable not set")
 
 BASIC_AUTH = os.getenv("BASIC_AUTH")
-AX_DEVICE_ID = ax_device_id()
-AX_FP = load_ax_fp()
+AX_DEVICE_ID = os.getenv("AX_DEVICE_ID") or ax_device_id()
+AX_FP = os.getenv("AX_FP") or load_ax_fp()
 UA = os.getenv("UA")
 
 def validate_contact(contact: str) -> bool:
