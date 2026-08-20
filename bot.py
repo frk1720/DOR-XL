@@ -163,7 +163,12 @@ def cmd_login(chat_id: int, uid: int, args: str):
         send_message(chat_id, "Nomor tidak valid. Harus diawali 628 dan maksimal 14 digit.")
         return
 
-    subscriber_id = get_otp(contact)
+    try:
+        subscriber_id = get_otp(contact)
+    except RuntimeError as exc:
+        print(f"[OTP] {exc}")
+        send_message(chat_id, f"Gagal mengirim OTP: {exc}")
+        return
     if not subscriber_id:
         send_message(chat_id, "Gagal mengirim OTP. Coba lagi nanti.")
         return

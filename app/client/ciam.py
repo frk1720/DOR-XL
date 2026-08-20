@@ -65,17 +65,23 @@ def get_otp(contact: str) -> str:
     print("Requesting OTP...")
     try:
         response = requests.request("GET", url, data=payload, headers=headers, params=querystring, timeout=30)
-        print("response body", response.text)
-        json_body = json.loads(response.text)
-    
+        try:
+            json_body = response.json()
+        except ValueError:
+            json_body = {}
+
         if "subscriber_id" not in json_body:
-            print(json_body.get("error", "No error message in response"))
-            raise ValueError("Subscriber ID not found in response")
-        
+            error = (
+                json_body.get("error_description")
+                or json_body.get("message")
+                or json_body.get("error")
+                or f"HTTP {response.status_code}"
+            )
+            raise RuntimeError(f"CIAM menolak permintaan OTP: {error}")
+
         return json_body["subscriber_id"]
-    except Exception as e:
-        print(f"Error requesting OTP: {e}")
-        return None
+    except requests.RequestException as exc:
+        raise RuntimeError(f"CIAM request OTP gagal: {exc.__class__.__name__}") from exc
 
 def extend_session(subscriber_id: str) -> str:
     b64_subscriber_id = base64.b64encode(subscriber_id.encode()).decode()
