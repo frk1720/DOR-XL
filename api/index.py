@@ -5,6 +5,7 @@ import os
 # Menambahkan parent directory agar bisa mengimpor bot.py
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import bot
+from app.service.auto_renew import run_auto_renew
 
 app = Flask(__name__)
 
@@ -21,5 +22,35 @@ def webhook():
         except Exception as e:
             print(f"Error handling update: {e}")
     return jsonify({"status": "ok"}), 200
+
+
+@app.route('/api/cron/auto-refill', methods=['GET', 'POST'])
+def auto_refill():
+    expected = os.getenv("CRON_SECRET")
+    supplied = request.headers.get("Authorization", "")
+    if not expected or supplied != f"Bearer {expected}":
+        return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        results = run_auto_renew(bot.API_KEY)
+        for result in results:
+            chat_id = result.get("notify_chat_id")
+            if chat_id and result.get("status") in {"purchased", "error"}:
+                try:
+                    if result["status"] == "purchased":
+                        text = (
+                            f"✅ Auto-renew berhasil untuk {result['number']}\n"
+                            f"Paket: {result['package']}\n"
+                            f"Harga: Rp {result['price']:,}"
+                        )
+                    else:
+                        text = f"❌ Auto-renew gagal untuk {result['number']}: {result['error']}"
+                    bot.send_message(chat_id, text)
+                except Exception as notify_error:
+                    print(f"Notification error for {result.get('number')}: {notify_error}")
+        return jsonify({"status": "ok", "processed": len(results), "results": results}), 200
+    except Exception as exc:
+        print(f"Auto-refill error: {exc}")
+        return jsonify({"error": "Auto-refill failed"}), 500
 
 # Vercel akan membaca variabel `app` ini secara otomatis

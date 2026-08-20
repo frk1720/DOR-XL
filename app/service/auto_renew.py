@@ -1,0 +1,140 @@
+import os
+from datetime import datetime, timezone
+
+import requests
+
+from app.client.ciam import get_new_token
+from app.client.engsel import get_balance, get_package, send_api_request
+from app.client.purchase.balance import settlement_balance
+from app.type_dict import PaymentItem
+
+
+QUOTA_PATH = "api/v8/packages/quota-details"
+IG_THRESHOLD = 0  # Keep existing behavior: purchase only at zero/not found.
+
+
+class SupabaseStore:
+    def __init__(self):
+        self.url = os.environ["SUPABASE_URL"].rstrip("/")
+        self.key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+        self.headers = {
+            "apikey": self.key,
+            "Authorization": f"Bearer {self.key}",
+            "Content-Type": "application/json",
+        }
+
+    def claim_accounts(self):
+        response = requests.post(
+            f"{self.url}/rest/v1/rpc/claim_auto_renew_accounts",
+            headers=self.headers,
+            json={"p_lock_seconds": 300},
+            timeout=20,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def update_account(self, account_id, values):
+        values["updated_at"] = datetime.now(timezone.utc).isoformat()
+        response = requests.patch(
+            f"{self.url}/rest/v1/auto_renew_accounts?id=eq.{account_id}",
+            headers={**self.headers, "Prefer": "return=minimal"},
+            json=values,
+            timeout=20,
+        )
+        response.raise_for_status()
+
+
+def get_quota_details(api_key, id_token):
+    result = send_api_request(
+        api_key,
+        QUOTA_PATH,
+        {"is_enterprise": False, "lang": "en", "family_member_id": ""},
+        id_token,
+        "POST",
+    )
+    if not isinstance(result, dict) or result.get("status") != "SUCCESS":
+        raise RuntimeError("Gagal mengambil data kuota")
+    return result.get("data", {}).get("quotas", [])
+
+
+def instagram_remaining(quotas):
+    for quota in quotas:
+        quota_name = quota.get("name", "").lower()
+        group_name = quota.get("group_name", "").lower()
+        for benefit in quota.get("benefits", []):
+            benefit_name = benefit.get("name", "").lower()
+            if "instagram" in benefit_name or "instagram" in quota_name or "instagram" in group_name:
+                return int(benefit.get("remaining", 0) or 0), True
+    return 0, False
+
+
+def buy_addon(api_key, tokens, option_code):
+    package = get_package(api_key, tokens, option_code)
+    if not package:
+        raise RuntimeError("Kode paket Instagram tidak ditemukan")
+
+    option = package.get("package_option", {})
+    family = package.get("package_family", {})
+    price = int(option.get("price", 0) or 0)
+    if price <= 0:
+        raise RuntimeError("Harga paket tidak valid")
+
+    balance = get_balance(api_key, tokens["id_token"])
+    current_balance = int((balance or {}).get("remaining", 0) or 0)
+    if current_balance < price:
+        raise RuntimeError(f"Pulsa tidak cukup: Rp {current_balance:,} < Rp {price:,}")
+
+    item = PaymentItem(
+        item_code=option_code,
+        product_type="",
+        item_price=price,
+        item_name=option.get("name", "Instagram add-on"),
+        tax=0,
+        token_confirmation=package.get("token_confirmation", ""),
+    )
+    result = settlement_balance(
+        api_key, tokens, [item], family.get("payment_for") or "BUY_PACKAGE",
+        ask_overwrite=False, overwrite_amount=price,
+    )
+    if not result or result.get("status") != "SUCCESS":
+        message = result.get("message", "Pembelian gagal") if isinstance(result, dict) else "Pembelian gagal"
+        raise RuntimeError(message)
+    return option.get("name", "Instagram add-on"), price
+
+
+def process_account(store, account, api_key):
+    account_id = account["id"]
+    result_prefix = {"number": account.get("number"), "notify_chat_id": account.get("notify_chat_id")}
+    try:
+        tokens = get_new_token(api_key, account["refresh_token"], account.get("subscriber_id", ""))
+        if not tokens:
+            raise RuntimeError("Token tidak dapat diperbarui")
+
+        quotas = get_quota_details(api_key, tokens["id_token"])
+        remaining, found = instagram_remaining(quotas)
+        store.update_account(account_id, {
+            "refresh_token": tokens.get("refresh_token", account["refresh_token"]),
+            "last_checked_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        if found and remaining > IG_THRESHOLD:
+            store.update_account(account_id, {"locked_until": None, "last_status": "ok", "last_error": None})
+            return {**result_prefix, "status": "ok", "remaining": remaining}
+
+        package_name, price = buy_addon(api_key, tokens, account["option_code"])
+        store.update_account(account_id, {
+            "locked_until": None,
+            "last_purchase_at": datetime.now(timezone.utc).isoformat(),
+            "last_status": "purchased",
+            "last_error": None,
+        })
+        return {**result_prefix, "status": "purchased", "package": package_name, "price": price}
+    except Exception as exc:
+        store.update_account(account_id, {"locked_until": None, "last_status": "error", "last_error": str(exc)[:500]})
+        return {**result_prefix, "status": "error", "error": str(exc)}
+
+
+def run_auto_renew(api_key):
+    store = SupabaseStore()
+    accounts = store.claim_accounts()
+    return [process_account(store, account, api_key) for account in accounts]

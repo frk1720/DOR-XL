@@ -63,6 +63,38 @@ Perintah pembelian paket (beli/QRIS/ewallet) belum tersedia di bot — gunakan C
 
 Sessions are saved per Telegram user in `tg_sessions.json`, so users stay logged in across restarts.
 
+## Auto-renew Instagram di Vercel
+
+Auto-renew serverless memproses semua nomor yang aktif di Supabase. Pemeriksaan
+mengikuti perilaku lama: add-on Instagram dibeli jika kuota Instagram tidak
+ditemukan atau sisa kuotanya `0 B`.
+
+1. Buat project Supabase Free, lalu jalankan isi `supabase_schema.sql` di SQL Editor.
+2. Isi tabel `auto_renew_accounts` untuk maksimal empat nomor. Simpan `option_code`
+   paket Instagram yang benar untuk setiap nomor. Jangan memasukkan refresh token
+   ke Git atau membagikannya.
+3. Tambahkan environment variables berikut di Vercel: `BOT_TOKEN`, `API_KEY`,
+   `BASE_API_URL`, `BASE_CIAM_URL`, `BASIC_AUTH`, `AX_DEVICE_ID`, `AX_FP`, `UA`,
+   `AES_KEY_ASCII`, `CRON_SECRET`, `SUPABASE_URL`, dan
+   `SUPABASE_SERVICE_ROLE_KEY`. Gunakan service-role key hanya di server Vercel.
+4. Deploy ulang Vercel dan uji endpoint dengan header:
+
+   `Authorization: Bearer <CRON_SECRET>`
+
+   ke `https://domain-anda.vercel.app/api/cron/auto-refill`.
+5. Buat job di cron-job.org (atau layanan cron gratis sejenis) setiap 5 atau 10
+   menit. Gunakan method `POST`, URL endpoint tersebut, dan header
+   `Authorization: Bearer <CRON_SECRET>`. Periksa execution time pada percobaan
+   pertama. Vercel Free memiliki batas waktu function yang pendek; jika empat
+   akun membuat satu invocation terlalu lama, buat empat job cron dengan jeda
+   berbeda dan tambahkan parameter filter akun pada deployment berikutnya, atau
+   gunakan worker gratis yang memiliki timeout lebih panjang.
+
+Endpoint mengunci akun selama lima menit sebelum memprosesnya. Mekanisme ini
+mencegah dua panggilan cron yang bersamaan membeli paket dua kali untuk nomor
+yang sama. File JSON lokal tidak dipakai sebagai sumber data auto-renew karena
+filesystem Vercel tidak persisten.
+
 # Info
 
 ## PS for Certain Indonesian mobile internet service provider
