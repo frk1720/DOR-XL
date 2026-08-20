@@ -65,8 +65,8 @@ def load_ax_fp() -> str:
     
     # Generate new if not found/empty
     dev = DeviceInfo(
-        manufacturer="samsung" + str(randint(1000, 9999)),
-        model="SM-N93" + str(randint(1000, 9999)),
+        manufacturer="samsung1000",
+        model="SM-N9300",
         lang="en",
         resolution="720x1540",
         tz_short="GMT07:00",
