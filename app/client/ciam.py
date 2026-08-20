@@ -233,7 +233,12 @@ def get_new_token(api_key: str, refresh_token: str, subscriber_id: str) -> str:
                 "error_description": error_description,
             },
         )
-        if error_code != "invalid_grant" and error_description != "Session not active":
+        generic_session_error = "server log at the debug level" in error_description.lower()
+        if (
+            error_code != "invalid_grant"
+            and error_description != "Session not active"
+            and not generic_session_error
+        ):
             if error_description:
                 raise RuntimeError(f"CIAM menolak refresh token: {error_description}")
             raise RuntimeError(f"CIAM menolak refresh token (HTTP {resp.status_code})")
