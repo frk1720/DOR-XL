@@ -106,9 +106,16 @@ def process_account(store, account, api_key):
     account_id = account["id"]
     result_prefix = {"number": account.get("number"), "notify_chat_id": account.get("notify_chat_id")}
     try:
-        tokens = get_new_token(api_key, account["refresh_token"], account.get("subscriber_id", ""))
+        refresh_token = str(account.get("refresh_token", "") or "").strip()
+        subscriber_id = str(account.get("subscriber_id", "") or "").strip()
+        if not refresh_token:
+            raise RuntimeError("refresh_token di Supabase kosong")
+        if not subscriber_id:
+            raise RuntimeError("subscriber_id di Supabase kosong")
+
+        tokens = get_new_token(api_key, refresh_token, subscriber_id)
         if not tokens:
-            raise RuntimeError("Token tidak dapat diperbarui")
+            raise RuntimeError("CIAM tidak mengembalikan token baru")
 
         quotas = get_quota_details(api_key, tokens["id_token"])
         remaining, found = instagram_remaining(quotas)

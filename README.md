@@ -95,6 +95,11 @@ mencegah dua panggilan cron yang bersamaan membeli paket dua kali untuk nomor
 yang sama. File JSON lokal tidak dipakai sebagai sumber data auto-renew karena
 filesystem Vercel tidak persisten.
 
+Setelah login Telegram berhasil, bot sekarang otomatis memperbarui
+`subscriber_id` dan `refresh_token` pada row Supabase dengan nomor yang sama.
+Row tersebut harus sudah dibuat lebih dulu dan memiliki `option_code`; proses
+sinkronisasi tidak membuat konfigurasi auto-renew baru secara otomatis.
+
 # Info
 
 ## PS for Certain Indonesian mobile internet service provider

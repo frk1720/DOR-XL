@@ -2,6 +2,9 @@ import os
 import json
 import time
 import threading
+from datetime import datetime, timezone
+
+import requests
 
 from app.client.ciam import get_new_token
 from app.client.engsel import get_profile
@@ -11,6 +14,42 @@ if os.environ.get("VERCEL"):
     SESSION_FILE = "/tmp/tg_sessions.json"
 
 _lock = threading.Lock()
+
+
+def _sync_auto_renew_account(number: str, subscriber_id: str, refresh_token: str):
+    """Update an existing auto-renew row without creating unconfigured rows."""
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    if not supabase_url or not supabase_key or not number or not refresh_token:
+        return
+
+    headers = {
+        "apikey": supabase_key,
+        "Authorization": f"Bearer {supabase_key}",
+        "Content-Type": "application/json",
+        "Accept-Profile": "public",
+        "Content-Profile": "public",
+        "Prefer": "return=representation",
+    }
+    try:
+        response = requests.patch(
+            f"{supabase_url.rstrip('/')}/rest/v1/auto_renew_accounts?number=eq.{number}",
+            headers=headers,
+            json={
+                "subscriber_id": subscriber_id or "",
+                "refresh_token": refresh_token,
+                "last_error": None,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        rows = response.json() if response.content else []
+        if not rows:
+            print(f"[auto-renew sync] row nomor {number} tidak ditemukan di Supabase")
+    except Exception as exc:
+        # Login must still succeed when Supabase is temporarily unavailable.
+        print(f"[auto-renew sync] gagal menyinkronkan {number}: {exc}")
 
 
 def _load_store() -> dict:
@@ -136,6 +175,11 @@ class TgSessionManager:
         }
         sess["active_number"] = active_num
         self._persist(uid)
+        _sync_auto_renew_account(
+            active_num,
+            prof.get("subscriber_id", ""),
+            tokens.get("refresh_token", ""),
+        )
         return sess
 
     def get_all_accounts(self, uid: int) -> dict:
@@ -195,6 +239,11 @@ class TgSessionManager:
                 acc["refresh_token"] = tokens["refresh_token"]
                 acc["last_refresh"] = int(time.time())
                 self._persist(uid)
+                _sync_auto_renew_account(
+                    active,
+                    acc.get("profile", {}).get("subscriber_id", ""),
+                    tokens.get("refresh_token", ""),
+                )
 
             return acc["tokens"]
 
