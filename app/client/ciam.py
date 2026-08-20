@@ -223,8 +223,17 @@ def get_new_token(api_key: str, refresh_token: str, subscriber_id: str) -> str:
         except ValueError:
             error_body = {}
 
+        error_code = error_body.get("error", "")
         error_description = error_body.get("error_description", "")
-        if error_description != "Session not active":
+        print(
+            "[CIAM refresh rejected]",
+            {
+                "http_status": resp.status_code,
+                "error": error_code,
+                "error_description": error_description,
+            },
+        )
+        if error_code != "invalid_grant" and error_description != "Session not active":
             if error_description:
                 raise RuntimeError(f"CIAM menolak refresh token: {error_description}")
             raise RuntimeError(f"CIAM menolak refresh token (HTTP {resp.status_code})")
