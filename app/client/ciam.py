@@ -108,13 +108,26 @@ def extend_session(subscriber_id: str) -> str:
     print("Extending session...")
     try:
         response = requests.get(url, headers=headers, params=querystring, timeout=30)
+        try:
+            data = response.json()
+        except ValueError:
+            data = {}
+
         if response.status_code != 200:
-            print(f"Failed to extend session: {response.status_code} - {response.text}")
+            error = data.get("error") or data.get("message") or "unknown error"
+            print(f"Failed to extend session: {response.status_code} - {error}")
             return None
-        
-        data = response.json()
-        exchange_code = data.get("data", {}).get("exchange_code")
-        
+
+        nested_data = data.get("data") if isinstance(data, dict) else None
+        exchange_code = None
+        if isinstance(nested_data, dict):
+            exchange_code = nested_data.get("exchange_code")
+        if not exchange_code and isinstance(data, dict):
+            exchange_code = data.get("exchange_code")
+
+        if not exchange_code:
+            keys = sorted(data.keys()) if isinstance(data, dict) else []
+            print(f"Extend session returned no exchange code: keys={keys}")
         return exchange_code
     except Exception as e:
         print(f"Error extending session: {e}")
