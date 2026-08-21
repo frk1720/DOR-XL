@@ -87,23 +87,77 @@ def check_xtra_combo_plus_status(quotas: list):
     return False, 0, None
 
 
+def _quota_bytes(value):
+    """Convert API quota values to bytes without crashing on malformed data."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _instagram_quota_matches(quotas: list):
+    """Return every benefit explicitly identified as Instagram."""
+    matches = []
+    for quota in quotas or []:
+        quota_name = str(quota.get("name", ""))
+        for benefit in quota.get("benefits", []) or []:
+            benefit_name = str(benefit.get("name", ""))
+            if "instagram" not in benefit_name.lower():
+                continue
+            matches.append({
+                "quota_name": quota_name or "Bonus Instagram",
+                "benefit_name": benefit_name or "Instagram",
+                "remaining": _quota_bytes(benefit.get("remaining")),
+                "total": _quota_bytes(benefit.get("total")),
+            })
+    return matches
+
+
 def check_instagram_quota_from_list(quotas: list):
     """
-    Check current remaining Instagram quota from quotas list.
-    Returns (remaining_bytes, total_bytes, quota_name, is_found).
+    Check all Instagram-related benefits from the quota list.
+    If multiple entries exist, an entry with remaining quota wins over an
+    exhausted entry, preventing a false refill from the first match.
     """
-    for q in quotas:
-        q_name = q.get("name", "").lower()
-        group_name = q.get("group_name", "").lower()
-        for b in q.get("benefits", []):
-            b_name = b.get("name", "").lower()
-            if "instagram" in b_name or "instagram" in q_name or "instagram" in group_name:
-                remaining = b.get("remaining", 0)
-                total = b.get("total", 0)
-                return remaining, total, q.get("name", "Bonus Instagram"), True
+    matches = _instagram_quota_matches(quotas)
+    if matches:
+        selected = max(matches, key=lambda item: item["remaining"])
+        return (
+            selected["remaining"],
+            selected["total"],
+            selected["quota_name"],
+            True,
+        )
 
-    # If no Instagram package active, it is considered 0 / not found
+    # If no Instagram package is present in the active quota response, it is
+    # considered 0 / not found, preserving the existing auto-refill policy.
     return 0, 0, None, False
+
+
+def print_quota_diagnostics(quotas: list):
+    """Print quota names and benefits without exposing authentication data."""
+    print("\n=== DIAGNOSTIK KUOTA (READ-ONLY) ===")
+    if not quotas:
+        print("Tidak ada quota aktif pada response API.")
+        return
+
+    for index, quota in enumerate(quotas, 1):
+        print(f"[{index}] {quota.get('name', '-')} | group={quota.get('group_name', '-')} | expired_at={quota.get('expired_at', '-')}")
+        for benefit in quota.get("benefits", []) or []:
+            print(
+                f"    - {benefit.get('name', '-')} | "
+                f"remaining={_quota_bytes(benefit.get('remaining'))} | "
+                f"total={_quota_bytes(benefit.get('total'))} | "
+                f"type={benefit.get('data_type', '-')}"
+            )
+
+    matches = _instagram_quota_matches(quotas)
+    print(f"Match Instagram: {len(matches)}")
+    for match in matches:
+        print(
+            f"    -> {match['quota_name']} / {match['benefit_name']} | "
+            f"{format_quota_byte(match['remaining'])} / {format_quota_byte(match['total'])}"
+        )
 
 
 def buy_xtra_combo_plus_package(api_key: str, tokens: dict):
@@ -228,7 +282,18 @@ def refill_instagram_package(api_key: str, tokens: dict, config: dict):
         print("[Refill Error] Gagal mengambil detail package option.")
         return False
 
-    price = pkg_detail.get("package_option", {}).get("price", 0)
+    package_option = pkg_detail.get("package_option", {})
+    price = _quota_bytes(package_option.get("price"))
+    if price <= 0:
+        print("[Refill Error] Harga paket tidak valid.")
+        return False
+
+    balance_data = get_balance(api_key, tokens.get("id_token"))
+    current_balance = _quota_bytes((balance_data or {}).get("remaining"))
+    if current_balance < price:
+        print(f"[Refill Error] Pulsa tidak mencukupi: Rp {current_balance:,} < Rp {price:,}.")
+        return False
+
     token_confirmation = pkg_detail.get("token_confirmation", "")
     item_name = f"{config['variant_name']} {config['option_name']}".strip()
 
@@ -344,20 +409,15 @@ def start_auto_refill_loop(interval_seconds: int = DEFAULT_CHECK_INTERVAL):
                 # 4. Check Instagram Quota
                 remaining, total, q_name, is_found = check_instagram_quota_from_list(quotas)
 
-                if not is_found or remaining == 0:
-                    if not is_found:
-                        print(f"[{now_str}] Kuota Instagram: TIDAK DITEMUKAN / 0 B.")
-                    else:
-                        print(f"[{now_str}] Kuota Instagram HABIS: 0 B / {format_quota_byte(total)}.")
-
-                    # Check if balance is sufficient for Instagram package (Rp 5.000)
-                    if current_balance >= 5000:
-                        print(f"[{now_str}] >> TRIGGER REFILL KUOTA INSTAGRAM MENGGUNAKAN PULSA <<")
-                        refill_success = refill_instagram_package(api_key, tokens, ig_config)
-                        if refill_success:
-                            time.sleep(10)
-                    else:
-                        print(f"[{now_str}] ❌ Pulsa tidak mencukupi untuk refill Instagram (Pulsa: Rp {current_balance:,} < Rp 5.000).")
+                if not is_found:
+                    print(f"[{now_str}] ⚠️ Kuota Instagram tidak ditemukan pada response API.")
+                    print(f"[{now_str}] ⏸️ Pembelian dibatalkan untuk mencegah salah beli. Menunggu cek berikutnya...")
+                elif remaining <= 0:
+                    print(f"[{now_str}] Kuota Instagram HABIS: 0 B / {format_quota_byte(total)}.")
+                    print(f"[{now_str}] >> TRIGGER REFILL KUOTA INSTAGRAM MENGGUNAKAN PULSA <<")
+                    refill_success = refill_instagram_package(api_key, tokens, ig_config)
+                    if refill_success:
+                        time.sleep(10)
                 else:
                     remaining_str = format_quota_byte(remaining)
                     total_str = format_quota_byte(total)
@@ -371,4 +431,32 @@ def start_auto_refill_loop(interval_seconds: int = DEFAULT_CHECK_INTERVAL):
 
 
 if __name__ == "__main__":
+    if "--diagnose-quota" in sys.argv:
+        active_user = AuthInstance.get_active_user()
+        if not active_user:
+            print("Error: Belum ada user yang login.")
+            sys.exit(1)
+
+        quotas = get_quota_details(
+            AuthInstance.api_key,
+            active_user["tokens"].get("id_token"),
+        )
+        if quotas is None:
+            print("Gagal mengambil data kuota.")
+            sys.exit(1)
+
+        print_quota_diagnostics(quotas)
+        remaining, total, quota_name, is_found = check_instagram_quota_from_list(quotas)
+        print("\n=== KEPUTUSAN DETEKTOR ===")
+        if is_found and remaining > 0:
+            print(f"AMAN: {quota_name} memiliki {format_quota_byte(remaining)} tersisa.")
+            print("Tidak ada pembelian yang dipanggil.")
+        elif is_found:
+            print(f"HABIS: {quota_name} memiliki 0 B dari {format_quota_byte(total)}.")
+            print("Mode diagnostik tidak melakukan pembelian.")
+        else:
+            print("TIDAK DITEMUKAN: tidak ada match Instagram pada response API.")
+            print("Mode diagnostik tidak melakukan pembelian.")
+        sys.exit(0)
+
     start_auto_refill_loop()
