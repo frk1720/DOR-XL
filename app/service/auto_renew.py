@@ -57,15 +57,27 @@ def get_quota_details(api_key, id_token):
     return result.get("data", {}).get("quotas", [])
 
 
+def _instagram_quota_matches(quotas):
+    matches = []
+    for quota in quotas or []:
+        quota_name = str(quota.get("name", ""))
+        for benefit in quota.get("benefits", []) or []:
+            benefit_name = str(benefit.get("name", ""))
+            if "instagram" not in benefit_name.lower():
+                continue
+            try:
+                remaining = int(benefit.get("remaining", 0) or 0)
+            except (TypeError, ValueError):
+                remaining = 0
+            matches.append((remaining, quota_name or "Instagram"))
+    return matches
+
+
 def instagram_remaining(quotas):
-    for quota in quotas:
-        quota_name = quota.get("name", "").lower()
-        group_name = quota.get("group_name", "").lower()
-        for benefit in quota.get("benefits", []):
-            benefit_name = benefit.get("name", "").lower()
-            if "instagram" in benefit_name or "instagram" in quota_name or "instagram" in group_name:
-                return int(benefit.get("remaining", 0) or 0), True
-    return 0, False
+    matches = _instagram_quota_matches(quotas)
+    if not matches:
+        return 0, False
+    return max(remaining for remaining, _ in matches), True
 
 
 def buy_addon(api_key, tokens, option_code):
@@ -124,7 +136,15 @@ def process_account(store, account, api_key):
             "last_checked_at": datetime.now(timezone.utc).isoformat(),
         })
 
-        if found and remaining > IG_THRESHOLD:
+        if not found:
+            store.update_account(account_id, {
+                "locked_until": None,
+                "last_status": "quota_unavailable",
+                "last_error": "Kuota Instagram tidak ditemukan pada response API; pembelian dibatalkan",
+            })
+            return {**result_prefix, "status": "quota_unavailable", "remaining": 0}
+
+        if remaining > IG_THRESHOLD:
             store.update_account(account_id, {"locked_until": None, "last_status": "ok", "last_error": None})
             return {**result_prefix, "status": "ok", "remaining": remaining}
 

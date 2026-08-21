@@ -86,6 +86,17 @@ menjalankan dua instance lokal atau cron Vercel untuk nomor yang sama karena
 keduanya dapat memicu transaksi bersamaan. Untuk otomatisasi produksi beberapa
 nomor, tetap gunakan cron Vercel dengan akun di Supabase.
 
+### Kontrak paket auto-renew online
+
+`auto_refill.py` lokal dan service Vercel menggunakan konfigurasi paket yang
+berbeda. Service online membeli paket berdasarkan `option_code` pada row
+`auto_renew_accounts`, bukan berdasarkan konstanta default di `auto_refill.py`.
+Pastikan `option_code` setiap nomor adalah option code add-on Instagram 10GB
+seharga Rp3.000 sebelum mengaktifkan pembelian otomatis. Service online membaca
+harga aktual dari detail option dan hanya membeli ketika benefit Instagram
+ditemukan serta seluruh match memiliki sisa `0`. Jika benefit tidak ditemukan,
+pembelian dibatalkan untuk mencegah salah beli.
+
 ## Auto-renew Instagram di Vercel
 
 Auto-renew serverless memproses semua nomor yang aktif di Supabase. Pemeriksaan
