@@ -63,6 +63,29 @@ Perintah pembelian paket (beli/QRIS/ewallet) belum tersedia di bot — gunakan C
 
 Sessions are saved per Telegram user in `tg_sessions.json`, so users stay logged in across restarts.
 
+## Monitoring lokal multi-nomor
+
+`auto_refill.py` dapat memproses semua akun yang tersimpan di `refresh-tokens.json`
+secara sequential dalam satu proses. Tambahkan akun melalui CLI (`python main.py`),
+lalu jalankan diagnostik read-only:
+
+```powershell
+python auto_refill.py --diagnose-quota
+```
+
+Perintah tersebut memeriksa setiap nomor, mencetak saldo dan seluruh quota, serta
+tidak melakukan pembelian. Untuk monitoring normal yang dapat membeli add-on saat
+kuota Instagram habis:
+
+```powershell
+python auto_refill.py
+```
+
+Satu siklus memproses semua nomor satu per satu, lalu menunggu 120 detik. Jangan
+menjalankan dua instance lokal atau cron Vercel untuk nomor yang sama karena
+keduanya dapat memicu transaksi bersamaan. Untuk otomatisasi produksi beberapa
+nomor, tetap gunakan cron Vercel dengan akun di Supabase.
+
 ## Auto-renew Instagram di Vercel
 
 Auto-renew serverless memproses semua nomor yang aktif di Supabase. Pemeriksaan

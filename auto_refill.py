@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from app.client.ciam import get_new_token
 from app.service.auth import AuthInstance
 from app.client.engsel import send_api_request, get_family, get_package, get_balance
 from app.client.purchase.balance import settlement_balance
@@ -327,136 +328,144 @@ def refill_instagram_package(api_key: str, tokens: dict, config: dict):
         return False
 
 
+def _local_accounts():
+    """Load every locally logged-in account without exposing its tokens."""
+    AuthInstance.load_tokens()
+    return [
+        account for account in AuthInstance.refresh_tokens
+        if account.get("number") and account.get("refresh_token")
+    ]
+
+
+def _refresh_local_account(account):
+    """Refresh one local account and persist only the rotated token."""
+    tokens = get_new_token(
+        AuthInstance.api_key,
+        account["refresh_token"],
+        account.get("subscriber_id", ""),
+    )
+    if not tokens or not tokens.get("id_token"):
+        raise RuntimeError("CIAM tidak mengembalikan token yang valid")
+
+    account["refresh_token"] = tokens.get("refresh_token", account["refresh_token"])
+    AuthInstance.write_tokens_to_file()
+    return tokens
+
+
+def process_local_account(account, ig_config, allow_purchase=True):
+    """Process one account; callers decide whether purchases are allowed."""
+    number = account["number"]
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n[{now_str}] Nomor {number}: memeriksa status paket & kuota...")
+
+    try:
+        tokens = _refresh_local_account(account)
+        id_token = tokens["id_token"]
+
+        bal_data = get_balance(AuthInstance.api_key, id_token)
+        current_balance = _quota_bytes((bal_data or {}).get("remaining"))
+        print(f"[{now_str}] Nomor {number}: sisa pulsa Rp {current_balance:,}")
+
+        quotas = get_quota_details(AuthInstance.api_key, id_token)
+        if quotas is None:
+            print(f"[{now_str}] Nomor {number}: gagal mengambil data kuota.")
+            return False
+
+        xcp_active, xcp_expired_at, xcp_name = check_xtra_combo_plus_status(quotas)
+        if not xcp_active:
+            exp_dt_str = (
+                datetime.fromtimestamp(xcp_expired_at).strftime("%Y-%m-%d %H:%M:%S")
+                if xcp_expired_at else "Tidak Ada"
+            )
+            print(f"[{now_str}] Nomor {number}: Xtra Combo Plus tidak aktif (Expired: {exp_dt_str}).")
+            if not allow_purchase:
+                print(f"[{now_str}] Nomor {number}: mode diagnostik, tidak membeli paket induk.")
+            elif current_balance >= XTRA_COMBO_PLUS_REWRITE_PRICE:
+                print(f"[{now_str}] Nomor {number}: membeli ulang Xtra Combo Plus.")
+                if buy_xtra_combo_plus_package(AuthInstance.api_key, tokens):
+                    time.sleep(10)
+            else:
+                print(f"[{now_str}] Nomor {number}: pulsa tidak cukup untuk Xtra Combo Plus.")
+            return True
+
+        exp_dt_str = datetime.fromtimestamp(xcp_expired_at).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{now_str}] Nomor {number}: paket induk [{xcp_name}] aktif sampai {exp_dt_str}.")
+
+        remaining, total, quota_name, is_found = check_instagram_quota_from_list(quotas)
+        if not is_found:
+            print(f"[{now_str}] Nomor {number}: kuota Instagram tidak ditemukan.")
+            print(f"[{now_str}] Nomor {number}: pembelian dibatalkan untuk mencegah salah beli.")
+        elif remaining <= 0:
+            print(f"[{now_str}] Nomor {number}: kuota Instagram HABIS (0 B / {format_quota_byte(total)}).")
+            if not allow_purchase:
+                print(f"[{now_str}] Nomor {number}: mode diagnostik, tidak membeli add-on.")
+            else:
+                print(f"[{now_str}] Nomor {number}: memulai refill Instagram menggunakan pulsa.")
+                if refill_instagram_package(AuthInstance.api_key, tokens, ig_config):
+                    time.sleep(10)
+        else:
+            print(
+                f"[{now_str}] Nomor {number}: kuota Instagram masih ada "
+                f"({format_quota_byte(remaining)} / {format_quota_byte(total)}). Aman."
+            )
+        return True
+    except Exception as exc:
+        print(f"[{now_str}] Nomor {number}: gagal diproses: {exc}")
+        return False
+
+
 def start_auto_refill_loop(interval_seconds: int = DEFAULT_CHECK_INTERVAL):
-    """
-    Main loop:
-    1. Checks Xtra Combo Plus status.
-       - If expired / not active: DO NOT refill IG. Re-buy Xtra Combo Plus (Family 23b71540-8785-4abe-816d-e9b4efa48f95, Option 35, Rp 30k) IF balance is sufficient (>= 30k).
-    2. If Xtra Combo Plus is active:
-       - Check Instagram quota.
-       - If Instagram quota is 0 / exhausted: Refill Instagram package using balance IF balance is sufficient.
-    Loop runs every `interval_seconds` (default 120s / 2 mins).
-    """
-    active_user = AuthInstance.get_active_user()
-    if not active_user:
-        print("Error: Belum ada user yang login.")
+    """Monitor every local account sequentially in one process."""
+    accounts = _local_accounts()
+    if not accounts:
+        print("Error: Belum ada akun lokal yang login.")
         return
 
     ig_config = get_ig_bookmark_config()
-
     clear_screen()
     print("=" * 65)
-    print("      🤖 AUTO REFILL KUOTA INSTAGRAM & XTRA COMBO PLUS 🤖      ")
+    print("      🤖 AUTO REFILL MULTI-NOMOR LOKAL 🤖      ")
     print("=" * 65)
-    print(f"Nomor Aktif       : {active_user['number']}")
+    print(f"Jumlah Nomor      : {len(accounts)}")
+    print(f"Nomor             : {', '.join(str(a['number']) for a in accounts)}")
     print(f"Xtra Combo Fam    : {XTRA_COMBO_PLUS_FAMCODE} (Option {XTRA_COMBO_PLUS_ORDER}, Rewrite Rp {XTRA_COMBO_PLUS_REWRITE_PRICE})")
     print(f"Instagram Paket   : {ig_config['variant_name']} - {ig_config['option_name']}")
     print(f"Check Interval    : {interval_seconds} detik ({interval_seconds // 60} menit)")
+    print("Pemrosesan akun    : sequential, satu per satu")
     print("Tekan Ctrl+C untuk menghentikan monitoring.")
     print("=" * 65)
 
     try:
         while True:
-            # Re-fetch active tokens (handles auto-token renewal if expired)
-            active_user = AuthInstance.get_active_user()
-            if not active_user:
-                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] User session expired. Mencoba login ulang...")
-                time.sleep(10)
-                continue
+            accounts = _local_accounts()
+            if not accounts:
+                print("Tidak ada akun lokal yang dapat diproses.")
+                return
 
-            api_key = AuthInstance.api_key
-            tokens = active_user["tokens"]
-            id_token = tokens.get("id_token")
+            for account in accounts:
+                process_local_account(account, ig_config, allow_purchase=True)
 
-            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            print(f"\n[{now_str}] Memeriksa status paket & kuota...")
-
-            # 1. Check current balance
-            bal_data = get_balance(api_key, id_token)
-            current_balance = bal_data.get("remaining", 0) if bal_data else 0
-            print(f"[{now_str}] Sisa Pulsa Saat Ini: Rp {current_balance:,}")
-
-            # 2. Fetch active quotas
-            quotas = get_quota_details(api_key, id_token)
-            if quotas is None:
-                print(f"[{now_str}] Gagal mengambil data kuota (koneksi/API error). Menunggu cek berikutnya...")
-                time.sleep(interval_seconds)
-                continue
-
-            # 3. Check Xtra Combo Plus status
-            xcp_active, xcp_expired_at, xcp_name = check_xtra_combo_plus_status(quotas)
-
-            if not xcp_active:
-                exp_dt_str = datetime.fromtimestamp(xcp_expired_at).strftime('%Y-%m-%d %H:%M:%S') if xcp_expired_at else "Tidak Ada"
-                print(f"[{now_str}] ⚠️ PAKET XTRA COMBO PLUS EXPIRED / TIDAK AKTIF (Expired at: {exp_dt_str})!")
-                print(f"[{now_str}] ⛔ JANGAN REFILL KUOTA INSTAGRAM KARENA INDUK EXPIRED.")
-
-                # Check if balance is sufficient to buy Xtra Combo Plus (Rp 30.000)
-                if current_balance >= XTRA_COMBO_PLUS_REWRITE_PRICE:
-                    print(f"[{now_str}] 💰 Pulsa mencukupi (Rp {current_balance:,} >= Rp {XTRA_COMBO_PLUS_REWRITE_PRICE:,}).")
-                    print(f"[{now_str}] >> MEMBELI KEMBALI XTRA COMBO PLUS (Option {XTRA_COMBO_PLUS_ORDER} @ Rp {XTRA_COMBO_PLUS_REWRITE_PRICE}) <<")
-                    bought = buy_xtra_combo_plus_package(api_key, tokens)
-                    if bought:
-                        time.sleep(10)
-                else:
-                    print(f"[{now_str}] ❌ Pulsa TIDAK mencukupi untuk beli Xtra Combo Plus: Rp {current_balance:,} < Rp {XTRA_COMBO_PLUS_REWRITE_PRICE:,}.")
-                    print(f"[{now_str}] Silakan isi pulsa terlebih dahulu.")
-
-            else:
-                exp_dt_str = datetime.fromtimestamp(xcp_expired_at).strftime('%Y-%m-%d %H:%M:%S')
-                print(f"[{now_str}] ✅ Paket Induk [{xcp_name}] AKTIF sampai {exp_dt_str}.")
-
-                # 4. Check Instagram Quota
-                remaining, total, q_name, is_found = check_instagram_quota_from_list(quotas)
-
-                if not is_found:
-                    print(f"[{now_str}] ⚠️ Kuota Instagram tidak ditemukan pada response API.")
-                    print(f"[{now_str}] ⏸️ Pembelian dibatalkan untuk mencegah salah beli. Menunggu cek berikutnya...")
-                elif remaining <= 0:
-                    print(f"[{now_str}] Kuota Instagram HABIS: 0 B / {format_quota_byte(total)}.")
-                    print(f"[{now_str}] >> TRIGGER REFILL KUOTA INSTAGRAM MENGGUNAKAN PULSA <<")
-                    refill_success = refill_instagram_package(api_key, tokens, ig_config)
-                    if refill_success:
-                        time.sleep(10)
-                else:
-                    remaining_str = format_quota_byte(remaining)
-                    total_str = format_quota_byte(total)
-                    print(f"[{now_str}] Kuota Instagram masih ada: {remaining_str} / {total_str} (Aman).")
-
-            print(f"Menunggu {interval_seconds} detik hingga pengecekan berikutnya...\n")
+            print(f"\nMenunggu {interval_seconds} detik hingga siklus berikutnya...\n")
             time.sleep(interval_seconds)
-
     except KeyboardInterrupt:
         print("\n\nMonitoring auto refill dihentikan oleh pengguna.")
 
 
 if __name__ == "__main__":
+    accounts = _local_accounts()
     if "--diagnose-quota" in sys.argv:
-        active_user = AuthInstance.get_active_user()
-        if not active_user:
-            print("Error: Belum ada user yang login.")
+        if not accounts:
+            print("Error: Belum ada akun lokal yang login.")
             sys.exit(1)
 
-        quotas = get_quota_details(
-            AuthInstance.api_key,
-            active_user["tokens"].get("id_token"),
-        )
-        if quotas is None:
-            print("Gagal mengambil data kuota.")
-            sys.exit(1)
-
-        print_quota_diagnostics(quotas)
-        remaining, total, quota_name, is_found = check_instagram_quota_from_list(quotas)
-        print("\n=== KEPUTUSAN DETEKTOR ===")
-        if is_found and remaining > 0:
-            print(f"AMAN: {quota_name} memiliki {format_quota_byte(remaining)} tersisa.")
-            print("Tidak ada pembelian yang dipanggil.")
-        elif is_found:
-            print(f"HABIS: {quota_name} memiliki 0 B dari {format_quota_byte(total)}.")
-            print("Mode diagnostik tidak melakukan pembelian.")
-        else:
-            print("TIDAK DITEMUKAN: tidak ada match Instagram pada response API.")
-            print("Mode diagnostik tidak melakukan pembelian.")
+        ig_config = get_ig_bookmark_config()
+        print("=" * 65)
+        print("      DIAGNOSTIK KUOTA MULTI-NOMOR (READ-ONLY)      ")
+        print("=" * 65)
+        print(f"Jumlah Nomor: {len(accounts)}")
+        for account in accounts:
+            process_local_account(account, ig_config, allow_purchase=False)
+        print("\nTidak ada pembelian yang dipanggil.")
         sys.exit(0)
 
     start_auto_refill_loop()
