@@ -79,8 +79,8 @@ def instagram_remaining(quotas):
         return 0, False
     return max(remaining for remaining, _ in matches), True
 
-def _xtra_combo_plus_3gb_available(quotas):
-    """Return whether the active quota list contains the 3GB main package."""
+def _xtra_combo_plus_3gb_available(quotas, api_key=None, tokens=None):
+    """Check the active main package, resolving names through quota details."""
     now_ts = int(datetime.now(timezone.utc).timestamp())
 
     def expiry_state(expiry):
@@ -128,50 +128,49 @@ def _xtra_combo_plus_3gb_available(quotas):
             for nested in value:
                 yield from package_metadata(nested)
 
-    def package_expiry(value):
-        """Yield expiry values from package metadata, never from benefits."""
-        if isinstance(value, dict):
-            for key, nested in value.items():
-                if key == "benefits":
-                    continue
-                if "expir" in key.lower() or "valid_until" in key.lower():
-                    if nested not in (None, "") and not isinstance(nested, (dict, list)):
-                        yield nested
-                elif isinstance(nested, (dict, list)):
-                    yield from package_expiry(nested)
-        elif isinstance(value, list):
-            for nested in value:
-                yield from package_expiry(nested)
+    def quota_expiry(quota):
+        """Read expiry only from the quota record, never from its benefits."""
+        for field in (
+            "expired_at",
+            "quota_expired_at",
+            "package_expired_at",
+            "expiry_date",
+            "valid_until",
+        ):
+            value = quota.get(field)
+            if value not in (None, ""):
+                return value
+        return None
 
     for quota in quotas or []:
+        detail = None
         metadata = " ".join(package_metadata(quota)).lower()
         compact_metadata = "".join(metadata.split())
-        if "bonus" in compact_metadata or "xtracomboplus" not in compact_metadata:
-            continue
+        matches_main_name = "bonus" not in compact_metadata and "xtracomboplus" in compact_metadata
+        matches_3gb = "3gb" in compact_metadata or "3 gb" in metadata
 
-        has_3gb_marker = "3gb" in compact_metadata or "3 gb" in metadata
-        if not has_3gb_marker:
-            for value in (
-                quota.get("total"),
-                quota.get("quota_total"),
-                quota.get("quota_allocated"),
-                quota.get("allocation"),
-            ):
-                try:
-                    size = float(value)
-                except (TypeError, ValueError):
-                    continue
-                if 2_850_000_000 <= size <= 3_250_000_000 or 2_800 <= size <= 3_300:
-                    has_3gb_marker = True
-                    break
-        if not has_3gb_marker:
-            continue
+        if not matches_main_name or not matches_3gb:
+            option_code = next(
+                (
+                    quota.get(field)
+                    for field in ("quota_code", "package_option_code", "option_code")
+                    if quota.get(field)
+                ),
+                None,
+            )
+            if option_code and api_key and tokens:
+                detail = get_package(api_key, tokens, str(option_code))
+                detail_metadata = " ".join(package_metadata(detail or {})).lower()
+                detail_compact = "".join(detail_metadata.split())
+                matches_main_name = (
+                    "bonus" not in detail_compact
+                    and "xtracomboplus" in detail_compact
+                )
+                matches_3gb = "3gb" in detail_compact or "3 gb" in detail_metadata
 
-        package_expiry_values = list(package_expiry(quota))
-        if not package_expiry_values:
-            package_expiry_values = [quota.get("expired_at"), quota.get("quota_expired_at")]
-        states = [expiry_state(value) for value in package_expiry_values]
-        if False not in states:
+        if not matches_main_name or not matches_3gb:
+            continue
+        if expiry_state(quota_expiry(quota)) is not False:
             return True
     return False
 
@@ -233,7 +232,7 @@ def process_account(store, account, api_key):
         })
 
         if not found:
-            if not _xtra_combo_plus_3gb_available(quotas):
+            if not _xtra_combo_plus_3gb_available(quotas, api_key, tokens):
                 message = "Paket induk Xtra Combo Plus 3GB tidak tersedia; add-on tidak dibeli"
                 store.update_account(account_id, {
                     "locked_until": None,
