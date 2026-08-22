@@ -83,16 +83,33 @@ def _xtra_combo_plus_3gb_available(quotas):
     """Return whether the active quota list contains the 3GB main package."""
     now_ts = int(datetime.now(timezone.utc).timestamp())
 
-    def is_active(expiry):
-        if expiry in (None, ""):
-            return True
+    def expiry_state(expiry):
+        """Return True/False when known, otherwise None for unknown expiry."""
+        if expiry in (None, "", 0, "0"):
+            return None
         try:
             expiry_number = float(expiry)
         except (TypeError, ValueError):
-            try:
-                expiry_number = datetime.fromisoformat(str(expiry).replace("Z", "+00:00")).timestamp()
-            except (TypeError, ValueError, OverflowError):
-                return False
+            text = str(expiry).strip()
+            parsed = None
+            for date_format in (
+                "%Y-%m-%d %H:%M:%S",
+                "%d-%m-%Y %H:%M:%S",
+                "%d/%m/%Y %H:%M:%S",
+                "%d-%m-%Y",
+                "%d/%m/%Y",
+            ):
+                try:
+                    parsed = datetime.strptime(text, date_format).replace(tzinfo=timezone.utc)
+                    break
+                except ValueError:
+                    continue
+            if parsed is None:
+                try:
+                    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+                except (TypeError, ValueError, OverflowError):
+                    return None
+            expiry_number = parsed.timestamp()
         if expiry_number > 10_000_000_000:
             expiry_number /= 1000
         return expiry_number > now_ts
@@ -102,15 +119,38 @@ def _xtra_combo_plus_3gb_available(quotas):
             str(quota.get("name", "")),
             str(quota.get("group_name", "")),
         ]
-        benefit_names = [
-            str(benefit.get("name", ""))
-            for benefit in quota.get("benefits", []) or []
-        ]
+        benefits = quota.get("benefits", []) or []
+        benefit_names = [str(benefit.get("name", "")) for benefit in benefits]
         names = " ".join(quota_names + benefit_names).lower()
         compact_name = "".join(names.split())
-        if "bonus" in compact_name:
+        if "bonus" in compact_name or "xtracomboplus" not in compact_name:
             continue
-        if "xtracomboplus" not in compact_name or "3gb" not in compact_name:
+
+        has_3gb_marker = "3gb" in compact_name or "3 gb" in names
+        if not has_3gb_marker:
+            size_values = [
+                quota.get("total"),
+                quota.get("quota_total"),
+                quota.get("quota_allocated"),
+                quota.get("allocation"),
+            ]
+            size_values.extend(
+                benefit.get(field)
+                for benefit in benefits
+                for field in ("total", "quota_total", "quota_allocated", "allocation")
+            )
+            for value in size_values:
+                try:
+                    size = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if 2_850_000_000 <= size <= 3_250_000_000:
+                    has_3gb_marker = True
+                    break
+                if 2_800 <= size <= 3_300:
+                    has_3gb_marker = True
+                    break
+        if not has_3gb_marker:
             continue
 
         expiry_values = [quota.get("expired_at"), quota.get("quota_expired_at")]
@@ -118,8 +158,8 @@ def _xtra_combo_plus_3gb_available(quotas):
             benefit.get("expired_at")
             for benefit in quota.get("benefits", []) or []
         )
-        expiry_values = [value for value in expiry_values if value not in (None, "")]
-        if not expiry_values or any(is_active(expiry) for expiry in expiry_values):
+        states = [expiry_state(value) for value in expiry_values]
+        if False not in states:
             return True
     return False
 
