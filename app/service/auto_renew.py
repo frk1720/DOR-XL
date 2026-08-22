@@ -115,51 +115,60 @@ def _xtra_combo_plus_3gb_available(quotas):
         return expiry_number > now_ts
 
     for quota in quotas or []:
-        quota_names = [
-            str(quota.get("name", "")),
-            str(quota.get("group_name", "")),
+        # The package record is authoritative. Do not derive the main package
+        # from individual benefits: their names and expiries are independent.
+        main_names = [
+            quota.get("name"),
+            quota.get("group_name"),
+            quota.get("package_name"),
+            quota.get("package_family_name"),
+            quota.get("package_variant_name"),
         ]
-        benefits = quota.get("benefits", []) or []
-        benefit_names = [str(benefit.get("name", "")) for benefit in benefits]
-        names = " ".join(quota_names + benefit_names).lower()
-        compact_name = "".join(names.split())
-        if "bonus" in compact_name or "xtracomboplus" not in compact_name:
+        main_name = " ".join(str(value or "") for value in main_names).lower()
+        compact_main_name = "".join(main_name.split())
+        if "bonus" in compact_main_name:
+            continue
+        if "xtracomboplus" not in compact_main_name:
             continue
 
-        has_3gb_marker = "3gb" in compact_name or "3 gb" in names
+        # For the reported package this is the exact package title:
+        # Xtra Combo Plus 3GB. Keep a small numeric fallback for APIs that
+        # return the size separately from the package title.
+        has_3gb_marker = "3gb" in compact_main_name or "3 gb" in main_name
         if not has_3gb_marker:
-            size_values = [
+            for value in (
                 quota.get("total"),
                 quota.get("quota_total"),
                 quota.get("quota_allocated"),
                 quota.get("allocation"),
-            ]
-            size_values.extend(
-                benefit.get(field)
-                for benefit in benefits
-                for field in ("total", "quota_total", "quota_allocated", "allocation")
-            )
-            for value in size_values:
+            ):
                 try:
                     size = float(value)
                 except (TypeError, ValueError):
                     continue
-                if 2_850_000_000 <= size <= 3_250_000_000:
-                    has_3gb_marker = True
-                    break
-                if 2_800 <= size <= 3_300:
+                if 2_850_000_000 <= size <= 3_250_000_000 or 2_800 <= size <= 3_300:
                     has_3gb_marker = True
                     break
         if not has_3gb_marker:
             continue
 
-        expiry_values = [quota.get("expired_at"), quota.get("quota_expired_at")]
-        expiry_values.extend(
-            benefit.get("expired_at")
-            for benefit in quota.get("benefits", []) or []
+        # Only the package-level expiry decides whether the main package is
+        # active. Benefits such as WhatsApp or Instagram may have other dates.
+        package_expiry = next(
+            (
+                quota.get(field)
+                for field in (
+                    "expired_at",
+                    "quota_expired_at",
+                    "package_expired_at",
+                    "expiry_date",
+                    "valid_until",
+                )
+                if quota.get(field) not in (None, "")
+            ),
+            None,
         )
-        states = [expiry_state(value) for value in expiry_values]
-        if False not in states:
+        if expiry_state(package_expiry) is not False:
             return True
     return False
 
