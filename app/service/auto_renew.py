@@ -82,25 +82,45 @@ def instagram_remaining(quotas):
 def _xtra_combo_plus_3gb_available(quotas):
     """Return whether the active quota list contains the 3GB main package."""
     now_ts = int(datetime.now(timezone.utc).timestamp())
+
+    def is_active(expiry):
+        if expiry in (None, ""):
+            return True
+        try:
+            expiry_number = float(expiry)
+        except (TypeError, ValueError):
+            try:
+                expiry_number = datetime.fromisoformat(str(expiry).replace("Z", "+00:00")).timestamp()
+            except (TypeError, ValueError, OverflowError):
+                return False
+        if expiry_number > 10_000_000_000:
+            expiry_number /= 1000
+        return expiry_number > now_ts
+
     for quota in quotas or []:
-        names = " ".join(
-            str(quota.get(field, ""))
-            for field in ("name", "group_name")
-        ).lower()
+        quota_names = [
+            str(quota.get("name", "")),
+            str(quota.get("group_name", "")),
+        ]
+        benefit_names = [
+            str(benefit.get("name", ""))
+            for benefit in quota.get("benefits", []) or []
+        ]
+        names = " ".join(quota_names + benefit_names).lower()
         compact_name = "".join(names.split())
         if "bonus" in compact_name:
             continue
         if "xtracomboplus" not in compact_name or "3gb" not in compact_name:
             continue
 
-        expired_at = quota.get("expired_at")
-        if expired_at in (None, ""):
+        expiry_values = [quota.get("expired_at"), quota.get("quota_expired_at")]
+        expiry_values.extend(
+            benefit.get("expired_at")
+            for benefit in quota.get("benefits", []) or []
+        )
+        expiry_values = [value for value in expiry_values if value not in (None, "")]
+        if not expiry_values or any(is_active(expiry) for expiry in expiry_values):
             return True
-        try:
-            if int(expired_at) > now_ts:
-                return True
-        except (TypeError, ValueError):
-            continue
     return False
 
 
