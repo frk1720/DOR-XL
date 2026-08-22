@@ -114,27 +114,42 @@ def _xtra_combo_plus_3gb_available(quotas):
             expiry_number /= 1000
         return expiry_number > now_ts
 
+    def package_metadata(value):
+        """Yield package-level scalar fields while excluding benefit records."""
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                if key == "benefits":
+                    continue
+                if isinstance(nested, (dict, list)):
+                    yield from package_metadata(nested)
+                elif nested not in (None, ""):
+                    yield str(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from package_metadata(nested)
+
+    def package_expiry(value):
+        """Yield expiry values from package metadata, never from benefits."""
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                if key == "benefits":
+                    continue
+                if "expir" in key.lower() or "valid_until" in key.lower():
+                    if nested not in (None, "") and not isinstance(nested, (dict, list)):
+                        yield nested
+                elif isinstance(nested, (dict, list)):
+                    yield from package_expiry(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from package_expiry(nested)
+
     for quota in quotas or []:
-        # The package record is authoritative. Do not derive the main package
-        # from individual benefits: their names and expiries are independent.
-        main_names = [
-            quota.get("name"),
-            quota.get("group_name"),
-            quota.get("package_name"),
-            quota.get("package_family_name"),
-            quota.get("package_variant_name"),
-        ]
-        main_name = " ".join(str(value or "") for value in main_names).lower()
-        compact_main_name = "".join(main_name.split())
-        if "bonus" in compact_main_name:
-            continue
-        if "xtracomboplus" not in compact_main_name:
+        metadata = " ".join(package_metadata(quota)).lower()
+        compact_metadata = "".join(metadata.split())
+        if "bonus" in compact_metadata or "xtracomboplus" not in compact_metadata:
             continue
 
-        # For the reported package this is the exact package title:
-        # Xtra Combo Plus 3GB. Keep a small numeric fallback for APIs that
-        # return the size separately from the package title.
-        has_3gb_marker = "3gb" in compact_main_name or "3 gb" in main_name
+        has_3gb_marker = "3gb" in compact_metadata or "3 gb" in metadata
         if not has_3gb_marker:
             for value in (
                 quota.get("total"),
@@ -152,23 +167,11 @@ def _xtra_combo_plus_3gb_available(quotas):
         if not has_3gb_marker:
             continue
 
-        # Only the package-level expiry decides whether the main package is
-        # active. Benefits such as WhatsApp or Instagram may have other dates.
-        package_expiry = next(
-            (
-                quota.get(field)
-                for field in (
-                    "expired_at",
-                    "quota_expired_at",
-                    "package_expired_at",
-                    "expiry_date",
-                    "valid_until",
-                )
-                if quota.get(field) not in (None, "")
-            ),
-            None,
-        )
-        if expiry_state(package_expiry) is not False:
+        package_expiry_values = list(package_expiry(quota))
+        if not package_expiry_values:
+            package_expiry_values = [quota.get("expired_at"), quota.get("quota_expired_at")]
+        states = [expiry_state(value) for value in package_expiry_values]
+        if False not in states:
             return True
     return False
 
