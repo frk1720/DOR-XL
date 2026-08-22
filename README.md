@@ -125,11 +125,12 @@ Plus 3GB` untuk kasus `quota_unavailable`.
    berbeda dan tambahkan parameter filter akun pada deployment berikutnya, atau
    gunakan worker gratis yang memiliki timeout lebih panjang.
 
-Endpoint mengunci akun selama lima menit sebelum memprosesnya. Selain lock tersebut,
-setiap pembelian berhasil menyimpan `last_purchase_at` dan menerapkan cooldown 30 menit.
-Selama cooldown, sistem tetap memeriksa kuota tetapi tidak melakukan pembelian ulang,
-sehingga keterlambatan API XL dalam menampilkan bonus baru tidak menyebabkan transaksi ganda.
-Mekanisme ini mencegah dua panggilan cron bersamaan membeli paket dua kali untuk nomor
+Endpoint mengunci akun selama lima menit sebelum memprosesnya. Setelah pembelian berhasil,
+`last_purchase_at` menerapkan cooldown 30 menit khusus untuk jalur `quota_unavailable`.
+Selama API XL belum menampilkan paket add-on yang baru dibeli, sistem tidak membeli ulang.
+Jika benefit Instagram terdeteksi tetapi `remaining` sudah `0`, sistem tidak menerapkan
+cooldown tersebut dan dapat membeli add-on berikutnya karena kuota memang terkonfirmasi habis.
+Mekanisme lock mencegah dua panggilan cron bersamaan membeli paket dua kali untuk nomor
 yang sama. File JSON lokal tidak dipakai sebagai sumber data auto-renew karena filesystem
 Vercel tidak persisten.
 

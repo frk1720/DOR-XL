@@ -304,20 +304,6 @@ def process_account(store, account, api_key):
             store.update_account(account_id, {"locked_until": None, "last_status": "ok", "last_error": None})
             return {**result_prefix, "status": "ok", "remaining": remaining}
 
-        if cooldown_remaining:
-            store.update_account(account_id, {
-                "locked_until": None,
-                "last_status": "purchase_cooldown",
-                "last_error": None,
-            })
-            return {
-                **result_prefix,
-                "status": "purchase_cooldown",
-                "remaining": remaining,
-                "purchase_skipped": True,
-                "reason": "purchase_cooldown",
-                "cooldown_remaining": cooldown_remaining,
-            }
 
         package_name, price = buy_addon(api_key, tokens, account["option_code"])
         store.update_account(account_id, {
