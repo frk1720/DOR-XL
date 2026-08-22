@@ -11,6 +11,7 @@ from app.type_dict import PaymentItem
 
 QUOTA_PATH = "api/v8/packages/quota-details"
 IG_THRESHOLD = 0  # Keep existing behavior: purchase only at zero/not found.
+PURCHASE_COOLDOWN_SECONDS = 30 * 60
 
 
 class SupabaseStore:
@@ -78,6 +79,26 @@ def instagram_remaining(quotas):
     if not matches:
         return 0, False
     return max(remaining for remaining, _ in matches), True
+
+def purchase_cooldown_remaining(last_purchase_at, now=None):
+    """Return cooldown seconds remaining after the last successful purchase."""
+    if last_purchase_at in (None, ""):
+        return 0
+    try:
+        purchased_at = last_purchase_at
+        if not isinstance(purchased_at, datetime):
+            text = str(purchased_at).strip()
+            try:
+                purchased_at = datetime.fromtimestamp(float(text), tz=timezone.utc)
+            except ValueError:
+                purchased_at = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if purchased_at.tzinfo is None:
+            purchased_at = purchased_at.replace(tzinfo=timezone.utc)
+        current_time = now or datetime.now(timezone.utc)
+        elapsed = (current_time - purchased_at).total_seconds()
+    except (TypeError, ValueError, OverflowError):
+        return PURCHASE_COOLDOWN_SECONDS
+    return min(PURCHASE_COOLDOWN_SECONDS, max(0, int(PURCHASE_COOLDOWN_SECONDS - elapsed + 0.999999)))
 
 def _xtra_combo_plus_3gb_available(quotas, api_key=None, tokens=None):
     """Check the active main package, resolving names through quota details."""
@@ -231,6 +252,8 @@ def process_account(store, account, api_key):
             "last_checked_at": datetime.now(timezone.utc).isoformat(),
         })
 
+        cooldown_remaining = purchase_cooldown_remaining(account.get("last_purchase_at"))
+
         if not found:
             if not _xtra_combo_plus_3gb_available(quotas, api_key, tokens):
                 message = "Paket induk Xtra Combo Plus 3GB tidak tersedia; add-on tidak dibeli"
@@ -245,6 +268,21 @@ def process_account(store, account, api_key):
                     "remaining": 0,
                     "purchase_skipped": True,
                     "reason": "main_package_unavailable",
+                }
+
+            if cooldown_remaining:
+                store.update_account(account_id, {
+                    "locked_until": None,
+                    "last_status": "purchase_cooldown",
+                    "last_error": None,
+                })
+                return {
+                    **result_prefix,
+                    "status": "purchase_cooldown",
+                    "remaining": 0,
+                    "purchase_skipped": True,
+                    "reason": "purchase_cooldown",
+                    "cooldown_remaining": cooldown_remaining,
                 }
 
             package_name, price = buy_addon(api_key, tokens, account["option_code"])
@@ -265,6 +303,21 @@ def process_account(store, account, api_key):
         if remaining > IG_THRESHOLD:
             store.update_account(account_id, {"locked_until": None, "last_status": "ok", "last_error": None})
             return {**result_prefix, "status": "ok", "remaining": remaining}
+
+        if cooldown_remaining:
+            store.update_account(account_id, {
+                "locked_until": None,
+                "last_status": "purchase_cooldown",
+                "last_error": None,
+            })
+            return {
+                **result_prefix,
+                "status": "purchase_cooldown",
+                "remaining": remaining,
+                "purchase_skipped": True,
+                "reason": "purchase_cooldown",
+                "cooldown_remaining": cooldown_remaining,
+            }
 
         package_name, price = buy_addon(api_key, tokens, account["option_code"])
         store.update_account(account_id, {

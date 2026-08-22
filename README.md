@@ -125,10 +125,13 @@ Plus 3GB` untuk kasus `quota_unavailable`.
    berbeda dan tambahkan parameter filter akun pada deployment berikutnya, atau
    gunakan worker gratis yang memiliki timeout lebih panjang.
 
-Endpoint mengunci akun selama lima menit sebelum memprosesnya. Mekanisme ini
-mencegah dua panggilan cron yang bersamaan membeli paket dua kali untuk nomor
-yang sama. File JSON lokal tidak dipakai sebagai sumber data auto-renew karena
-filesystem Vercel tidak persisten.
+Endpoint mengunci akun selama lima menit sebelum memprosesnya. Selain lock tersebut,
+setiap pembelian berhasil menyimpan `last_purchase_at` dan menerapkan cooldown 30 menit.
+Selama cooldown, sistem tetap memeriksa kuota tetapi tidak melakukan pembelian ulang,
+sehingga keterlambatan API XL dalam menampilkan bonus baru tidak menyebabkan transaksi ganda.
+Mekanisme ini mencegah dua panggilan cron bersamaan membeli paket dua kali untuk nomor
+yang sama. File JSON lokal tidak dipakai sebagai sumber data auto-renew karena filesystem
+Vercel tidak persisten.
 
 Setelah login Telegram berhasil, bot sekarang otomatis memperbarui
 `subscriber_id` dan `refresh_token` pada row Supabase dengan nomor yang sama.
