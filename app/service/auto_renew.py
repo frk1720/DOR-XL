@@ -79,6 +79,30 @@ def instagram_remaining(quotas):
         return 0, False
     return max(remaining for remaining, _ in matches), True
 
+def _xtra_combo_plus_3gb_available(quotas):
+    """Return whether the active quota list contains the 3GB main package."""
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    for quota in quotas or []:
+        names = " ".join(
+            str(quota.get(field, ""))
+            for field in ("name", "group_name")
+        ).lower()
+        compact_name = "".join(names.split())
+        if "bonus" in compact_name:
+            continue
+        if "xtracomboplus" not in compact_name or "3gb" not in compact_name:
+            continue
+
+        expired_at = quota.get("expired_at")
+        if expired_at in (None, ""):
+            return True
+        try:
+            if int(expired_at) > now_ts:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
 
 def buy_addon(api_key, tokens, option_code):
     package = get_package(api_key, tokens, option_code)
@@ -137,12 +161,35 @@ def process_account(store, account, api_key):
         })
 
         if not found:
+            if not _xtra_combo_plus_3gb_available(quotas):
+                message = "Paket induk Xtra Combo Plus 3GB tidak tersedia; add-on tidak dibeli"
+                store.update_account(account_id, {
+                    "locked_until": None,
+                    "last_status": "quota_unavailable",
+                    "last_error": message,
+                })
+                return {
+                    **result_prefix,
+                    "status": "quota_unavailable",
+                    "remaining": 0,
+                    "purchase_skipped": True,
+                    "reason": "main_package_unavailable",
+                }
+
+            package_name, price = buy_addon(api_key, tokens, account["option_code"])
             store.update_account(account_id, {
                 "locked_until": None,
-                "last_status": "quota_unavailable",
-                "last_error": "Kuota Instagram tidak ditemukan pada response API; pembelian dibatalkan",
+                "last_purchase_at": datetime.now(timezone.utc).isoformat(),
+                "last_status": "purchased",
+                "last_error": None,
             })
-            return {**result_prefix, "status": "quota_unavailable", "remaining": 0}
+            return {
+                **result_prefix,
+                "status": "purchased",
+                "package": package_name,
+                "price": price,
+                "trigger": "quota_unavailable",
+            }
 
         if remaining > IG_THRESHOLD:
             store.update_account(account_id, {"locked_until": None, "last_status": "ok", "last_error": None})
@@ -159,6 +206,8 @@ def process_account(store, account, api_key):
     except Exception as exc:
         store.update_account(account_id, {"locked_until": None, "last_status": "error", "last_error": str(exc)[:500]})
         return {**result_prefix, "status": "error", "error": str(exc)}
+
+
 
 
 def run_auto_renew(api_key):

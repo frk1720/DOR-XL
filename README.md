@@ -91,17 +91,18 @@ nomor, tetap gunakan cron Vercel dengan akun di Supabase.
 `auto_refill.py` lokal dan service Vercel menggunakan konfigurasi paket yang
 berbeda. Service online membeli paket berdasarkan `option_code` pada row
 `auto_renew_accounts`, bukan berdasarkan konstanta default di `auto_refill.py`.
-Pastikan `option_code` setiap nomor adalah option code add-on Instagram 10GB
-seharga Rp3.000 sebelum mengaktifkan pembelian otomatis. Service online membaca
-harga aktual dari detail option dan hanya membeli ketika benefit Instagram
-ditemukan serta seluruh match memiliki sisa `0`. Jika benefit tidak ditemukan,
-pembelian dibatalkan untuk mencegah salah beli.
+Pastikan `option_code` setiap nomor adalah option code add-on Instagram 3GB
+seharga sesuai detail option sebelum mengaktifkan pembelian otomatis. Service online membaca
+harga aktual dari detail option dan membeli ketika benefit Instagram memiliki sisa
+`0 B`. Jika benefit Instagram tidak tersedia (`quota_unavailable`), sistem terlebih
+dahulu memastikan paket induk aktif bernama `Xtra Combo Plus 3GB`. Jika paket induk
+tersebut tidak ada atau sudah kedaluwarsa, add-on tidak dibeli.
 
 ## Auto-renew Instagram di Vercel
 
-Auto-renew serverless memproses semua nomor yang aktif di Supabase. Pemeriksaan
-mengikuti perilaku lama: add-on Instagram dibeli jika kuota Instagram tidak
-ditemukan atau sisa kuotanya `0 B`.
+Pemeriksaan memicu pembelian add-on Instagram jika kuota Instagram tidak ditemukan
+(`quota_unavailable`) atau sisa kuotanya `0 B`, dengan guard paket induk `Xtra Combo
+Plus 3GB` untuk kasus `quota_unavailable`.
 
 1. Buat project Supabase Free, lalu jalankan isi `supabase_schema.sql` di SQL Editor.
 2. Isi tabel `auto_renew_accounts` untuk maksimal empat nomor. Simpan `option_code`
