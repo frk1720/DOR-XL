@@ -6,6 +6,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import bot
 from app.service.auto_renew import run_auto_renew
+from app.service.tg_session import _load_session_rows
 
 app = Flask(__name__)
 
@@ -59,5 +60,32 @@ def auto_refill():
     except Exception as exc:
         print(f"Auto-refill error: {exc}")
         return jsonify({"error": "Auto-refill failed"}), 500
+@app.route('/api/diag/session', methods=['GET'])
+def diag_session():
+    """Diagnostik persistensi session Telegram (terproteksi CRON_SECRET).
+
+    Hanya mengembalikan metadata non-sensitif; refresh token tidak dibocorkan.
+    """
+    expected = os.getenv("CRON_SECRET")
+    supplied = request.headers.get("Authorization", "")
+    if not expected or supplied != f"Bearer {expected}":
+        return jsonify({"error": "Unauthorized"}), 401
+
+    if not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_SERVICE_ROLE_KEY"):
+        return jsonify({"supabase_configured": False, "rows": None}), 200
+
+    rows = _load_session_rows(875037027)
+    return jsonify({
+        "supabase_configured": True,
+        "rows": [
+            {
+                "number": r.get("number"),
+                "active": r.get("active"),
+                "has_refresh_token": bool(r.get("refresh_token")),
+                "profile_keys": sorted((r.get("profile") or {}).keys()),
+            }
+            for r in rows
+        ],
+    }), 200
 
 # Vercel akan membaca variabel `app` ini secara otomatis
