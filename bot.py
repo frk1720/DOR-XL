@@ -4,10 +4,13 @@ Jalankan dengan:  python bot.py
 Membutuhkan BOT_TOKEN di file .env (dapatkan dari @BotFather).
 """
 
+import calendar
 import os
 import re
 import time
 import requests
+from datetime import datetime, timedelta, timezone
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -44,6 +47,8 @@ from app.client.circle import (
 )
 from app.client.encrypt import decrypt_circle_msisdn
 from app.service.tg_session import init_tg_sessions
+from app.service.auto_renew import SupabaseStore
+
 from app.util import load_api_key, verify_api_key
 from app.client.purchase.balance import settlement_balance
 from app.client.purchase.qris import show_qris_payment
@@ -109,7 +114,8 @@ HELP_TEXT = (
     "/logout [nomor] — Keluar dari akun\n\n"
     "<b>Info</b>\n"
     "/paket — Lihat paket aktif\n"
-    "/riwayat — Riwayat transaksi\n"
+    "/riwayat — Riwayat transaksi XL\n"
+    "/auto_riwayat [YYYY-MM] — Ringkasan pembelian auto-renew\n"
     "/notifikasi — Notifikasi terbaru\n"
     "/family — Info Family Plan/Akrab\n"
     "/circle — Info Circle\n\n"
@@ -339,6 +345,47 @@ def cmd_riwayat(chat_id: int, uid: int, _args: str):
         )
     send_message(chat_id, "\n".join(lines))
 
+def cmd_auto_riwayat(chat_id: int, _uid: int, args: str):
+    period = args.strip()
+    if period:
+        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", period):
+            send_message(chat_id, "Gunakan: /auto_riwayat [YYYY-MM]\nContoh: /auto_riwayat 2026-08")
+            return
+        year, month = (int(value) for value in period.split("-"))
+    else:
+        now = datetime.now(timezone(timedelta(hours=7)))
+        year, month = now.year, now.month
+        period = f"{year:04d}-{month:02d}"
+
+    try:
+        summary = SupabaseStore().monthly_transaction_summary(chat_id, year, month)
+    except Exception as exc:
+        print(f"Auto-renew history error: {exc.__class__.__name__}")
+        send_message(chat_id, "Gagal mengambil riwayat auto-renew. Coba lagi nanti.")
+        return
+
+    if not summary["by_number"]:
+        send_message(chat_id, f"Tidak ada transaksi auto-renew Instagram pada {period}.")
+        return
+
+    last_day = calendar.monthrange(year, month)[1]
+    lines = [
+        "📊 <b>Riwayat Auto-renew Instagram</b>",
+        f"Periode: {period}-01 s/d {period}-{last_day:02d}",
+        f"Total sukses: <b>{summary['success']}x</b>",
+        f"Total gagal: <b>{summary['failed']}x</b>",
+        f"Total pulsa terpakai: <b>Rp {summary['spent']:,}</b>",
+        "",
+        "<b>Per nomor:</b>",
+    ]
+    for number, item in sorted(summary["by_number"].items()):
+        lines.append(
+            f"• <b>{number}</b> — sukses {item['success']}x, "
+            f"gagal {item['failed']}x, pulsa Rp {item['spent']:,}"
+        )
+    send_message(chat_id, "\n".join(lines))
+
+
 
 def cmd_notifikasi(chat_id: int, uid: int, _args: str):
     tokens = _need_login(chat_id, uid)
@@ -567,6 +614,8 @@ COMMANDS = {
     "/packages": cmd_paket,
     "/riwayat": cmd_riwayat,
     "/history": cmd_riwayat,
+    "/auto_riwayat": cmd_auto_riwayat,
+    "/auto-riwayat": cmd_auto_riwayat,
     "/notifikasi": cmd_notifikasi,
     "/notif": cmd_notifikasi,
     "/family": cmd_family,

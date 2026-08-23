@@ -38,10 +38,17 @@ def auto_refill():
             if chat_id and result.get("status") in {"purchased", "error"}:
                 try:
                     if result["status"] == "purchased":
+                        balance_remaining = result.get("balance_remaining")
+                        balance_text = (
+                            f"Rp {balance_remaining:,}"
+                            if isinstance(balance_remaining, int)
+                            else "Tidak tersedia"
+                        )
                         text = (
                             f"✅ Auto-renew berhasil untuk {result['number']}\n"
                             f"Paket: {result['package']}\n"
-                            f"Harga: Rp {result['price']:,}"
+                            f"Harga: Rp {result['price']:,}\n"
+                            f"Sisa pulsa: {balance_text}"
                         )
                     else:
                         text = f"❌ Auto-renew gagal untuk {result['number']}: {result['error']}"

@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -43,6 +43,73 @@ class SupabaseStore:
             timeout=20,
         )
         response.raise_for_status()
+
+    def record_transaction(self, account, status, amount=0, package_name=None, error=None):
+        chat_id = str(account.get("notify_chat_id", "") or "").strip()
+        if not chat_id:
+            return
+        payload = {
+            "account_id": account.get("id"),
+            "number": account.get("number", ""),
+            "notify_chat_id": chat_id,
+            "option_code": account.get("option_code", ""),
+            "package_name": package_name,
+            "status": status,
+            "amount": int(amount or 0),
+            "error": str(error)[:500] if error else None,
+        }
+        response = requests.post(
+            f"{self.url}/rest/v1/auto_renew_transactions",
+            headers={**self.headers, "Prefer": "return=minimal"},
+            json=payload,
+            timeout=20,
+        )
+        response.raise_for_status()
+
+    def monthly_transaction_summary(self, chat_id, year, month):
+        wib = timezone(timedelta(hours=7))
+        start = datetime(year, month, 1, tzinfo=wib)
+        if month == 12:
+            end = datetime(year + 1, 1, 1, tzinfo=wib)
+        else:
+            end = datetime(year, month + 1, 1, tzinfo=wib)
+        response = requests.get(
+            f"{self.url}/rest/v1/auto_renew_transactions",
+            headers=self.headers,
+            params=[
+                ("select", "number,status,amount,package_name,occurred_at,error"),
+                ("notify_chat_id", f"eq.{str(chat_id)}"),
+                ("occurred_at", f"gte.{start.isoformat()}"),
+                ("occurred_at", f"lt.{end.isoformat()}"),
+                ("order", "occurred_at.desc"),
+            ],
+            timeout=20,
+        )
+        response.raise_for_status()
+        rows = response.json()
+        summary = {}
+        for row in rows:
+            number = row.get("number", "-")
+            item = summary.setdefault(number, {"success": 0, "failed": 0, "spent": 0})
+            status = row.get("status")
+            if status == "success":
+                item["success"] += 1
+                item["spent"] += int(row.get("amount", 0) or 0)
+            elif status == "failed":
+                item["failed"] += 1
+        return {
+            "rows": rows,
+            "by_number": summary,
+            "success": sum(item["success"] for item in summary.values()),
+            "failed": sum(item["failed"] for item in summary.values()),
+            "spent": sum(item["spent"] for item in summary.values()),
+        }
+def _record_transaction_safely(store, account, status, amount=0, package_name=None, error=None):
+    try:
+        store.record_transaction(account, status, amount, package_name, error)
+    except Exception as exc:
+        print(f"Auto-renew transaction ledger error: {exc.__class__.__name__}")
+
 
 
 def get_quota_details(api_key, id_token):
@@ -227,12 +294,25 @@ def buy_addon(api_key, tokens, option_code):
     if not result or result.get("status") != "SUCCESS":
         message = result.get("message", "Pembelian gagal") if isinstance(result, dict) else "Pembelian gagal"
         raise RuntimeError(message)
-    return option.get("name", "Instagram add-on"), price
+
+    # A successful purchase remains successful if the follow-up balance read
+    # is unavailable; the notification will report the balance as unavailable.
+    try:
+        balance_after = get_balance(api_key, tokens["id_token"])
+        try:
+            remaining_after = int((balance_after or {}).get("remaining"))
+        except (TypeError, ValueError):
+            remaining_after = None
+    except Exception:
+        remaining_after = None
+    return option.get("name", "Instagram add-on"), price, remaining_after
 
 
 def process_account(store, account, api_key):
     account_id = account["id"]
     result_prefix = {"number": account.get("number"), "notify_chat_id": account.get("notify_chat_id")}
+    purchase_attempted = False
+    transaction_recorded = False
     try:
         refresh_token = str(account.get("refresh_token", "") or "").strip()
         subscriber_id = str(account.get("subscriber_id", "") or "").strip()
@@ -285,7 +365,10 @@ def process_account(store, account, api_key):
                     "cooldown_remaining": cooldown_remaining,
                 }
 
-            package_name, price = buy_addon(api_key, tokens, account["option_code"])
+            purchase_attempted = True
+            package_name, price, balance_remaining = buy_addon(api_key, tokens, account["option_code"])
+            _record_transaction_safely(store, account, "success", price, package_name)
+            transaction_recorded = True
             store.update_account(account_id, {
                 "locked_until": None,
                 "last_purchase_at": datetime.now(timezone.utc).isoformat(),
@@ -297,6 +380,7 @@ def process_account(store, account, api_key):
                 "status": "purchased",
                 "package": package_name,
                 "price": price,
+                "balance_remaining": balance_remaining,
                 "trigger": "quota_unavailable",
             }
 
@@ -304,16 +388,26 @@ def process_account(store, account, api_key):
             store.update_account(account_id, {"locked_until": None, "last_status": "ok", "last_error": None})
             return {**result_prefix, "status": "ok", "remaining": remaining}
 
-
-        package_name, price = buy_addon(api_key, tokens, account["option_code"])
+        purchase_attempted = True
+        package_name, price, balance_remaining = buy_addon(api_key, tokens, account["option_code"])
+        _record_transaction_safely(store, account, "success", price, package_name)
+        transaction_recorded = True
         store.update_account(account_id, {
             "locked_until": None,
             "last_purchase_at": datetime.now(timezone.utc).isoformat(),
             "last_status": "purchased",
             "last_error": None,
         })
-        return {**result_prefix, "status": "purchased", "package": package_name, "price": price}
+        return {
+            **result_prefix,
+            "status": "purchased",
+            "package": package_name,
+            "price": price,
+            "balance_remaining": balance_remaining,
+        }
     except Exception as exc:
+        if purchase_attempted and not transaction_recorded:
+            _record_transaction_safely(store, account, "failed", error=exc)
         store.update_account(account_id, {"locked_until": None, "last_status": "error", "last_error": str(exc)[:500]})
         return {**result_prefix, "status": "error", "error": str(exc)}
 

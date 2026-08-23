@@ -104,7 +104,9 @@ Pemeriksaan memicu pembelian add-on Instagram jika kuota Instagram tidak ditemuk
 (`quota_unavailable`) atau sisa kuotanya `0 B`, dengan guard paket induk `Xtra Combo
 Plus 3GB` untuk kasus `quota_unavailable`.
 
-1. Buat project Supabase Free, lalu jalankan isi `supabase_schema.sql` di SQL Editor.
+1. Buat project Supabase Free, lalu jalankan seluruh isi `supabase_schema.sql` di SQL Editor.
+   Schema tersebut juga membuat tabel `auto_renew_transactions` untuk mencatat setiap
+   percobaan pembelian add-on Instagram yang sukses atau gagal.
 2. Isi tabel `auto_renew_accounts` untuk maksimal empat nomor. Simpan `option_code`
    paket Instagram yang benar untuk setiap nomor. Jangan memasukkan refresh token
    ke Git atau membagikannya.
@@ -142,6 +144,17 @@ sinkronisasi tidak membuat konfigurasi auto-renew baru secara otomatis.
 Jika auto-renew gagal saat refresh token, kolom `last_error` sekarang menyimpan
 alasan CIAM yang sudah disanitasi, misalnya `CIAM menolak refresh token: ...`.
 Isi token tidak pernah ditulis ke log atau pesan Telegram.
+Setelah pembelian add-on berhasil, notifikasi Telegram juga menampilkan sisa pulsa
+terbaru dalam format rupiah. Jika pembacaan saldo pascapembelian gagal, transaksi tetap
+dianggap berhasil dan notifikasi menampilkan `Sisa pulsa: Tidak tersedia`.
+
+Gunakan `/auto_riwayat` untuk melihat ringkasan transaksi auto-renew pada bulan berjalan.
+Gunakan `/auto_riwayat YYYY-MM` untuk memilih bulan tertentu, misalnya
+`/auto_riwayat 2026-08`. Ringkasan menampilkan jumlah sukses, jumlah gagal, dan total
+pulsa yang terpakai per nomor serta keseluruhan nomor yang terhubung ke chat Telegram.
+Data dibatasi berdasarkan `notify_chat_id`; percobaan yang dilewati karena cooldown atau
+paket induk tidak tersedia tidak dicatat sebagai transaksi gagal karena tidak ada pembelian
+yang dicoba.
 
 # Info
 
