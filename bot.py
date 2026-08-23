@@ -419,7 +419,7 @@ def cmd_riwayat(chat_id: int, uid: int, _args: str):
         return
 
     data = get_transaction_history(API_KEY, tokens) or {}
-    history = data.get("list", [])[:10]
+    history = data.get("list", [])[:31]
     if not history:
         send_message(chat_id, "Tidak ada riwayat transaksi.")
         return
