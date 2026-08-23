@@ -184,7 +184,8 @@ HELP_TEXT = (
     "/familycode &lt;kode&gt; — Lihat paket berdasarkan family code\n"
     "/optioncode &lt;kode&gt; — Detail paket berdasarkan option code\n"
     "/validate &lt;nomor&gt; — Validasi nomor msisdn\n\n"
-    "/help — Tampilkan pesan ini"
+    "/help — Tampilkan pesan ini\n\n"
+    "ℹ️ Sesi login disimpan di Supabase dan tidak hilang saat bot diperbarui."
 )
 
 
