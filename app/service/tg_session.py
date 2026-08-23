@@ -47,6 +47,8 @@ def _sync_auto_renew_account(number: str, subscriber_id: str, refresh_token: str
         rows = response.json() if response.content else []
         if not rows:
             print(f"[auto-renew sync] row nomor {number} tidak ditemukan di Supabase")
+        else:
+            print(f"[auto-renew sync] row nomor {number} berhasil diperbarui")
     except Exception as exc:
         # Login must still succeed when Supabase is temporarily unavailable.
         print(f"[auto-renew sync] gagal menyinkronkan {number}: {exc}")
@@ -100,6 +102,7 @@ class TgSessionManager:
                 "accounts": {},
                 "pending_contact": None,
                 "pending_wallet": None,
+                "pending_action": None,
             }
             for num, acc in u.get("accounts", {}).items():
                 sess["accounts"][num] = {
@@ -138,6 +141,7 @@ class TgSessionManager:
                 "accounts": {},
                 "pending_contact": None,
                 "pending_wallet": None,
+                "pending_action": None,
             }
         return self.sessions[uid]
 

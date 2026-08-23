@@ -99,6 +99,66 @@ def send_message(chat_id: int, text: str, parse_mode: str = "HTML", reply_markup
         payload["reply_markup"] = reply_markup
     tg_api("sendMessage", payload)
 
+MAIN_MENU = {
+    "keyboard": [
+        ["👤 Akun", "📊 Informasi"],
+        ["📦 Paket", "🧾 Riwayat"],
+        ["🔎 Cari Paket", "⚙️ Bantuan"],
+    ],
+    "resize_keyboard": True,
+    "is_persistent": True,
+}
+ACCOUNT_MENU = {
+    "keyboard": [
+        ["🔐 Login", "💰 Status"],
+        ["📋 Akun Tersimpan", "🔄 Ganti Akun"],
+        ["🚪 Logout", "⬅️ Menu Utama"],
+    ],
+    "resize_keyboard": True,
+}
+INFO_MENU = {
+    "keyboard": [
+        ["📦 Paket Aktif", "🧾 Riwayat XL"],
+        ["📊 Auto-renew", "🔔 Notifikasi"],
+        ["👨‍👩‍👧 Family Plan", "⭕ Circle"],
+        ["⬅️ Menu Utama"],
+    ],
+    "resize_keyboard": True,
+}
+PACKAGE_MENU = {
+    "keyboard": [
+        ["🔥 Paket Hot", "📁 Family Code"],
+        ["🔑 Option Code", "✅ Validasi Nomor"],
+        ["⬅️ Menu Utama"],
+    ],
+    "resize_keyboard": True,
+}
+
+
+def _show_menu(chat_id: int, text: str, keyboard: dict = MAIN_MENU):
+    send_message(chat_id, text, reply_markup=keyboard)
+
+
+def _ask_menu_input(chat_id: int, uid: int, action: str, prompt: str):
+    sessions.get_session(uid)["pending_action"] = action
+    send_message(chat_id, prompt, reply_markup=MAIN_MENU)
+
+
+
+def _run_menu_handler(chat_id: int, uid: int, handler):
+    try:
+        handler(chat_id, uid, "")
+    except Exception as exc:
+        print(f"Menu handler error: {exc.__class__.__name__}")
+        send_message(chat_id, "Terjadi kesalahan. Coba lagi nanti.", reply_markup=MAIN_MENU)
+def _run_menu_handler_with_args(chat_id: int, uid: int, handler, args: str):
+    try:
+        handler(chat_id, uid, args)
+    except Exception as exc:
+        print(f"Menu input error: {exc.__class__.__name__}")
+        send_message(chat_id, "Terjadi kesalahan. Coba lagi nanti.", reply_markup=MAIN_MENU)
+
+
 
 # ---------------------------------------------------------------------------
 # Bot commands
@@ -152,11 +212,11 @@ def _fmt_quota(b) -> str:
 
 
 def cmd_start(chat_id: int, _uid: int, _args: str):
-    send_message(chat_id, HELP_TEXT)
+    _show_menu(chat_id, "<b>me-cli Bot</b>\nPilih layanan dari menu di bawah.")
 
 
 def cmd_help(chat_id: int, _uid: int, _args: str):
-    send_message(chat_id, HELP_TEXT)
+    _show_menu(chat_id, HELP_TEXT)
 
 
 def cmd_login(chat_id: int, uid: int, args: str):
@@ -794,6 +854,73 @@ def handle_callback_query(cq: dict):
 # ---------------------------------------------------------------------------
 
 
+MENU_ACTIONS = {
+    "👤 Akun": ("menu", ACCOUNT_MENU, "Pilih layanan akun."),
+    "📊 Informasi": ("menu", INFO_MENU, "Pilih informasi yang ingin dilihat."),
+    "📦 Paket": ("menu", PACKAGE_MENU, "Pilih layanan paket."),
+    "🔎 Cari Paket": ("menu", PACKAGE_MENU, "Pilih metode pencarian paket."),
+    "⚙️ Bantuan": ("handler", cmd_help, ""),
+    "🧾 Riwayat": ("handler", cmd_riwayat, ""),
+    "⬅️ Menu Utama": ("menu", MAIN_MENU, "Pilih layanan dari menu utama."),
+    "🔐 Login": ("input", "login", "Masukkan nomor XL diawali 628 (contoh: 6281234567890):"),
+    "💰 Status": ("handler", cmd_status, ""),
+    "📋 Akun Tersimpan": ("handler", cmd_accounts, ""),
+    "🔄 Ganti Akun": ("input", "switch", "Masukkan nomor akun yang ingin diaktifkan:"),
+    "🚪 Logout": ("handler", cmd_logout, ""),
+    "📦 Paket Aktif": ("handler", cmd_paket, ""),
+    "🧾 Riwayat XL": ("handler", cmd_riwayat, ""),
+    "📊 Auto-renew": ("handler", cmd_auto_riwayat, ""),
+    "🔔 Notifikasi": ("handler", cmd_notifikasi, ""),
+    "👨‍👩‍👧 Family Plan": ("handler", cmd_family, ""),
+    "⭕ Circle": ("handler", cmd_circle, ""),
+    "🔥 Paket Hot": ("handler", cmd_hot, ""),
+    "📁 Family Code": ("input", "familycode", "Masukkan family code paket:"),
+    "🔑 Option Code": ("input", "optioncode", "Masukkan option code paket:"),
+    "✅ Validasi Nomor": ("input", "validate", "Masukkan nomor yang ingin divalidasi (diawali 628):"),
+}
+
+
+def handle_menu_text(chat_id: int, uid: int, text: str) -> bool:
+    """Tangani tombol Reply Keyboard dan input lanjutan dari tombol."""
+    action = MENU_ACTIONS.get(text)
+    sess = sessions.get_session(uid)
+
+    if action:
+        kind, value, prompt = action
+        sess["pending_action"] = None
+        if kind == "menu":
+            _show_menu(chat_id, prompt, value)
+        elif kind == "input":
+            _ask_menu_input(chat_id, uid, value, prompt)
+        else:
+            _run_menu_handler(chat_id, uid, value)
+        return True
+
+    pending_action = sess.get("pending_action")
+    if pending_action:
+        sess["pending_action"] = None
+        handler = COMMANDS.get(f"/{pending_action}")
+        if handler:
+            _run_menu_handler_with_args(chat_id, uid, handler, text)
+        return True
+
+    return False
+
+
+def _handle_command(chat_id: int, uid: int, text: str):
+    cmd, _, args = text.partition(" ")
+    cmd = cmd.split("@")[0].lower()
+    handler = COMMANDS.get(cmd)
+    if handler:
+        try:
+            handler(chat_id, uid, args)
+        except Exception as e:
+            print(f"Command {cmd} error: {e.__class__.__name__}")
+            send_message(chat_id, "Terjadi kesalahan. Coba lagi nanti.")
+    else:
+        send_message(chat_id, "Perintah tidak dikenal. Ketik /help.", reply_markup=MAIN_MENU)
+
+
 def handle_update(update: dict):
     if "callback_query" in update:
         handle_callback_query(update["callback_query"])
@@ -837,20 +964,13 @@ def handle_update(update: dict):
             send_message(chat_id, f"Nomor {provider} tidak valid. Pastikan dimulai dengan 08 dan panjang 10-13 digit.\nKetik 'batal' untuk membatalkan.")
             return
 
+    if handle_menu_text(chat_id, uid, text):
+        return
+
     if text.startswith("/"):
-        # Strip @botname suffix jika ada (mis. /status@MyBot)
-        cmd, _, args = text.partition(" ")
-        cmd = cmd.split("@")[0].lower()
-        handler = COMMANDS.get(cmd)
-        if handler:
-            try:
-                handler(chat_id, uid, args)
-            except Exception as e:
-                send_message(chat_id, f"Terjadi kesalahan: {e}")
-        else:
-            send_message(chat_id, "Perintah tidak dikenal. Ketik /help.")
+        _handle_command(chat_id, uid, text)
     else:
-        send_message(chat_id, "Ketik /help untuk melihat perintah.")
+        send_message(chat_id, "Pilih layanan dari menu atau ketik /help.", reply_markup=MAIN_MENU)
 
 
 def main():
