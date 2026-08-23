@@ -192,7 +192,13 @@ def _need_login(chat_id: int, uid: int):
     """Return tokens jika user login, selain itu kirim pesan & return None."""
     tokens = sessions.get_tokens(uid)
     if not tokens:
-        send_message(chat_id, "Anda belum login. Gunakan /login &lt;nomor&gt;.")
+        hint = ""
+        if not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_SERVICE_ROLE_KEY"):
+            hint = (
+                "\n\nℹ️ Supabase session persistence belum aktif di server; "
+                "pastikan SUPABASE_URL dan SUPABASE_SERVICE_ROLE_KEY terset."
+            )
+        send_message(chat_id, "Anda belum login. Gunakan /login &lt;nomor&gt;." + hint)
         return None
     return tokens
 

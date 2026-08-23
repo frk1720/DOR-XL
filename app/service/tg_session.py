@@ -123,6 +123,13 @@ def _load_session_rows(uid: int) -> list:
             params={"telegram_id": f"eq.{str(uid)}", "select": "number,refresh_token,profile,active"},
             timeout=10,
         )
+        # 404 menandakan tabel belum dibuat (schema belum dijalankan di Supabase).
+        if response.status_code == 404:
+            print(
+                "[tg-session sync] tabel tg_user_accounts belum ada; "
+                "jalankan isi supabase_schema.sql di SQL Editor Supabase"
+            )
+            return []
         response.raise_for_status()
         rows = response.json() or []
         return rows if isinstance(rows, list) else []
