@@ -53,6 +53,83 @@ def _sync_auto_renew_account(number: str, subscriber_id: str, refresh_token: str
         # Login must still succeed when Supabase is temporarily unavailable.
         print(f"[auto-renew sync] gagal menyinkronkan {number}: {exc}")
 
+def _supabase_headers():
+    """Headers REST untuk service-role Supabase; None saat env belum diset."""
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    if not supabase_url or not supabase_key:
+        return None
+    return supabase_url.rstrip("/"), {
+        "apikey": supabase_key,
+        "Authorization": f"Bearer {supabase_key}",
+        "Content-Type": "application/json",
+        "Accept-Profile": "public",
+        "Content-Profile": "public",
+    }
+
+
+def _persist_session_row(uid: int, number: str, refresh_token: str, profile: dict, active: bool):
+    """Upsert satu akun Telegram user ke Supabase; kegagalan tidak boleh memblokir login."""
+    creds = _supabase_headers()
+    if not creds or not number or not refresh_token:
+        return
+    url, headers = creds
+    try:
+        response = requests.post(
+            f"{url}/rest/v1/rpc/upsert_tg_user_account",
+            headers=headers,
+            json={
+                "p_telegram_id": str(uid),
+                "p_number": number,
+                "p_refresh_token": refresh_token,
+                "p_profile": profile or {},
+                "p_active": bool(active),
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        print(f"[tg-session sync] gagal upsert {number}: {exc.__class__.__name__}")
+
+
+def _delete_session_row(uid: int, number: str):
+    """Hapus satu akun dari Supabase; kegagalan tidak boleh memblokir logout."""
+    creds = _supabase_headers()
+    if not creds or not number:
+        return
+    url, headers = creds
+    try:
+        response = requests.delete(
+            f"{url}/rest/v1/tg_user_accounts",
+            headers=headers,
+            params={"telegram_id": f"eq.{str(uid)}", "number": f"eq.{number}"},
+            timeout=10,
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        print(f"[tg-session sync] gagal delete {number}: {exc.__class__.__name__}")
+
+
+def _load_session_rows(uid: int) -> list:
+    """Ambil seluruh akun tersimpan milik satu Telegram user; return [] saat gagal."""
+    creds = _supabase_headers()
+    if not creds:
+        return []
+    url, headers = creds
+    try:
+        response = requests.get(
+            f"{url}/rest/v1/tg_user_accounts",
+            headers=headers,
+            params={"telegram_id": f"eq.{str(uid)}", "select": "number,refresh_token,profile,active"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        rows = response.json() or []
+        return rows if isinstance(rows, list) else []
+    except Exception as exc:
+        print(f"[tg-session sync] gagal load akun uid {uid}: {exc.__class__.__name__}")
+        return []
+
 
 def _load_store() -> dict:
     if not os.path.exists(SESSION_FILE):
@@ -143,6 +220,7 @@ class TgSessionManager:
                 "pending_wallet": None,
                 "pending_action": None,
             }
+            self._hydrate_from_supabase(uid)
         return self.sessions[uid]
 
     def is_logged_in(self, uid: int) -> bool:
@@ -179,6 +257,13 @@ class TgSessionManager:
         }
         sess["active_number"] = active_num
         self._persist(uid)
+        _persist_session_row(
+            uid,
+            active_num,
+            tokens["refresh_token"],
+            prof,
+            active=True,
+        )
         _sync_auto_renew_account(
             active_num,
             prof.get("subscriber_id", ""),
@@ -195,6 +280,13 @@ class TgSessionManager:
         if number in sess.get("accounts", {}):
             sess["active_number"] = number
             self._persist(uid)
+            _persist_session_row(
+                uid,
+                number,
+                sess["accounts"][number].get("refresh_token", ""),
+                sess["accounts"][number].get("profile", {}),
+                active=True,
+            )
             return True
         return False
 
@@ -202,10 +294,10 @@ class TgSessionManager:
         sess = self.get_session(uid)
         if not number:
             number = sess.get("active_number")
-            
+
         if number in sess.get("accounts", {}):
             del sess["accounts"][number]
-            
+
             # Update active_number
             if sess.get("active_number") == number:
                 if sess["accounts"]:
@@ -213,6 +305,7 @@ class TgSessionManager:
                 else:
                     sess["active_number"] = None
             self._persist(uid)
+            _delete_session_row(uid, number)
             return True
         return False
 
@@ -243,6 +336,13 @@ class TgSessionManager:
                 acc["refresh_token"] = tokens["refresh_token"]
                 acc["last_refresh"] = int(time.time())
                 self._persist(uid)
+                _persist_session_row(
+                    uid,
+                    active,
+                    tokens["refresh_token"],
+                    acc.get("profile", {}),
+                    active=True,
+                )
                 _sync_auto_renew_account(
                     active,
                     acc.get("profile", {}).get("subscriber_id", ""),
