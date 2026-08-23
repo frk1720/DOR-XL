@@ -311,6 +311,50 @@ def cmd_switch(chat_id: int, uid: int, args: str):
     else:
         send_message(chat_id, f"Nomor {num} tidak ditemukan di daftar akun Anda. Cek /accounts.")
 
+def _fmt_benefit_line(ben: dict) -> str | None:
+    """Format satu benefit jadi (nama, sisa/total) atau None jika tidak valid."""
+    dt = ben.get("data_type", "")
+    rem = ben.get("remaining", 0) or 0
+    tot = ben.get("total", 0) or 0
+    name = ben.get("name", "-")
+    if dt == "DATA":
+        return f"{name}: {_fmt_quota(rem)} / {_fmt_quota(tot)}"
+    if dt == "VOICE":
+        return f"{name}: {rem // 60} / {tot // 60} menit"
+    if dt == "TEXT":
+        return f"{name}: {rem} / {tot} SMS"
+    return f"{name}: {rem} / {tot}"
+
+
+def _fmt_quota_blocks(quotas: list) -> list:
+    """Format seluruh paket aktif: nama, tanggal kadaluarsa, dan tiap benefit."""
+    blocks = []
+    for idx, q in enumerate(quotas, 1):
+        lines = [f"{idx}. <b>{q.get('name', '-')}</b>"]
+        expired_at = q.get("expired_at")
+        if expired_at:
+            lines.append(f"   📆 {time.strftime('%d-%m-%Y', time.localtime(expired_at))}")
+        for ben in q.get("benefits", []) or []:
+            formatted = _fmt_benefit_line(ben)
+            if formatted:
+                lines.append(f"   • {formatted}")
+        blocks.append("\n".join(lines))
+    return blocks
+
+
+def _fetch_quotas(api_key: str, tokens: dict):
+    """Ambil daftar quota aktif; return None saat gagal."""
+    res = send_api_request(
+        api_key,
+        "api/v8/packages/quota-details",
+        {"is_enterprise": False, "lang": "en", "family_member_id": ""},
+        tokens["id_token"],
+        "POST",
+    )
+    if not isinstance(res, dict) or res.get("status") != "SUCCESS":
+        return None
+    return res.get("data", {}).get("quotas", [])
+
 
 def cmd_status(chat_id: int, uid: int, _args: str):
     tokens = _need_login(chat_id, uid)
@@ -340,6 +384,16 @@ def cmd_status(chat_id: int, uid: int, _args: str):
             f"⭐ Points: {tiering.get('current_point', 0)} | Tier: {tiering.get('tier', 0)}"
         )
 
+    quotas = _fetch_quotas(API_KEY, tokens)
+    if quotas is None:
+        lines.append("\nℹ️ Detail paket tidak tersedia saat ini.")
+    elif quotas:
+        lines.append("")
+        lines.append("<b>Paket aktif:</b>")
+        lines.extend(_fmt_quota_blocks(quotas))
+    else:
+        lines.append("\nℹ️ Tidak ada paket aktif.")
+
     send_message(chat_id, "\n".join(lines))
 
 
@@ -348,40 +402,15 @@ def cmd_paket(chat_id: int, uid: int, _args: str):
     if not tokens:
         return
 
-    res = send_api_request(
-        API_KEY,
-        "api/v8/packages/quota-details",
-        {"is_enterprise": False, "lang": "en", "family_member_id": ""},
-        tokens["id_token"],
-        "POST",
-    )
-    if not isinstance(res, dict) or res.get("status") != "SUCCESS":
+    quotas = _fetch_quotas(API_KEY, tokens)
+    if quotas is None:
         send_message(chat_id, "Gagal mengambil paket. Coba lagi nanti.")
         return
-
-    quotas = res.get("data", {}).get("quotas", [])
     if not quotas:
         send_message(chat_id, "Tidak ada paket aktif.")
         return
 
-    blocks = []
-    for q in quotas:
-        lines = [f"📦 <b>{q.get('name', '-')}</b>"]
-        for ben in q.get("benefits", []):
-            dt = ben.get("data_type", "")
-            rem = ben.get("remaining", 0)
-            tot = ben.get("total", 0)
-            if dt == "DATA":
-                lines.append(f"  • {ben.get('name', '-')}: {_fmt_quota(rem)} / {_fmt_quota(tot)}")
-            elif dt == "VOICE":
-                lines.append(f"  • {ben.get('name', '-')}: {rem // 60}/{tot // 60} menit")
-            elif dt == "TEXT":
-                lines.append(f"  • {ben.get('name', '-')}: {rem}/{tot} SMS")
-            else:
-                lines.append(f"  • {ben.get('name', '-')}: {rem}/{tot}")
-        blocks.append("\n".join(lines))
-
-    send_message(chat_id, "\n\n".join(blocks))
+    send_message(chat_id, "\n\n".join(_fmt_quota_blocks(quotas)))
 
 
 def cmd_riwayat(chat_id: int, uid: int, _args: str):
