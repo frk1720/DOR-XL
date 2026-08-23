@@ -280,6 +280,8 @@ class TgSessionManager:
 
     def get_all_accounts(self, uid: int) -> dict:
         sess = self.get_session(uid)
+        if not sess.get("accounts"):
+            self._hydrate_from_supabase(uid)
         return sess.get("accounts", {})
         
     def switch_account(self, uid: int, number: str) -> bool:
@@ -316,12 +318,38 @@ class TgSessionManager:
             return True
         return False
 
+    def _hydrate_from_supabase(self, uid: int) -> bool:
+        """Muat akun tersimpan dari Supabase saat session lokal kosong (instance baru)."""
+        sess = self.sessions.get(uid)
+        if not sess or sess.get("accounts"):
+            return False
+        rows = _load_session_rows(uid)
+        if not rows:
+            return False
+        for row in rows:
+            number = row.get("number")
+            refresh_token = row.get("refresh_token")
+            if not number or not refresh_token:
+                continue
+            profile = row.get("profile") if isinstance(row.get("profile"), dict) else {}
+            sess["accounts"][number] = {
+                "refresh_token": refresh_token,
+                "tokens": None,
+                "profile": profile,
+                "last_refresh": 0,
+            }
+            if row.get("active"):
+                sess["active_number"] = number
+        return True
+
     def get_tokens(self, uid: int) -> dict | None:
         """Return valid tokens for a telegram user's active account, refreshing when needed."""
         with _lock:
             sess = self.sessions.get(uid)
             if not sess:
                 return None
+            if not sess.get("accounts"):
+                self._hydrate_from_supabase(uid)
             active = sess.get("active_number")
             if not active or active not in sess.get("accounts", {}):
                 return None
@@ -362,6 +390,8 @@ class TgSessionManager:
         sess = self.sessions.get(uid)
         if not sess:
             return None
+        if not sess.get("accounts"):
+            self._hydrate_from_supabase(uid)
         active = sess.get("active_number")
         if not active or active not in sess.get("accounts", {}):
             return None
