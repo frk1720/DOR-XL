@@ -13,9 +13,20 @@ from app.client.encrypt import (
 )
 
 BASE_API_URL = os.getenv("BASE_API_URL")
-if not BASE_API_URL:
-    raise ValueError("BASE_API_URL environment variable not set")
 UA = os.getenv("UA")
+
+
+def _require_base_url() -> str:
+    """Return BASE_API_URL or raise a clear, targeted error at call time.
+
+    Deferred here (instead of at import) so the module imports cleanly on a
+    Vercel cold start even when the env var is missing. The first request that
+    actually needs the URL will surface the missing configuration with a
+    meaningful message instead of crashing the whole function at import.
+    """
+    if not BASE_API_URL:
+        raise ValueError("BASE_API_URL environment variable not set")
+    return BASE_API_URL
 
 def send_api_request(
     api_key: str,
@@ -24,6 +35,7 @@ def send_api_request(
     id_token: str,
     method: str = "POST",
 ):
+    base_url = _require_base_url()
     encrypted_payload = encryptsign_xdata(
         api_key=api_key,
         method=method,
@@ -41,7 +53,7 @@ def send_api_request(
     x_sig = encrypted_payload["x_signature"]
     
     headers = {
-        "host": BASE_API_URL.replace("https://", ""),
+        "host": base_url.replace("https://", ""),
         "content-type": "application/json; charset=utf-8",
         "user-agent": UA,
         "x-api-key": API_KEY,
@@ -54,7 +66,7 @@ def send_api_request(
         "x-version-app": "8.9.0",
     }
 
-    url = f"{BASE_API_URL}/{path}"
+    url = f"{base_url}/{path}"
     resp = requests.post(url, headers=headers, data=json.dumps(body), timeout=30)
     
     # print(f"Headers: {json.dumps(headers, indent=2)}")

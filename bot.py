@@ -17,16 +17,24 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
 
-if not BOT_TOKEN:
-    raise SystemExit(
-        "BOT_TOKEN tidak ditemukan di .env. "
-        "Buat bot di @BotFather lalu tambahkan BOT_TOKEN=<token> ke .env"
-    )
+
+def _bot_token() -> str:
+    """Return BOT_TOKEN or raise a friendly error at the point of use.
+
+    Validasi token dipindah ke sini (bukan saat import) supaya `import bot`
+    tidak crash di cold-start Vercel yang tidak punya file .env. CLI (`python
+    bot.py`) tetap mendapat pesan jelas karena main() memakai helper ini.
+    """
+    if not BOT_TOKEN:
+        raise SystemExit(
+            "BOT_TOKEN tidak ditemukan di .env. "
+            "Buat bot di @BotFather lalu tambahkan BOT_TOKEN=<token> ke .env"
+        )
+    return BOT_TOKEN
+
 
 # API_KEY di .env adalah static app key (dipakai encrypt.py/engsel.py untuk
 # header x-api-key). Wajib ada, tapi BUKAN key yang dipakai untuk signature.
-if not os.getenv("API_KEY"):
-    raise SystemExit("API_KEY tidak ditemukan di .env")
 
 # Import setelah load_dotenv agar env vars (BASE_API_URL dll) terbaca.
 from app.client.ciam import get_otp, submit_otp, validate_contact
@@ -58,14 +66,24 @@ from app.type_dict import PaymentItem
 # API key milik user (dari @fykxt_bot) yang dipakai untuk signature/encrypt
 # lewat crypto service. Disimpan di file api.key (sama seperti CLI).
 API_KEY = load_api_key()
-if not API_KEY or not verify_api_key(API_KEY):
-    raise SystemExit(
-        "API key tidak ditemukan atau tidak valid.\n"
-        "Dapatkan dari bot @fykxt_bot (kirim /viewkey), lalu simpan ke file\n"
-        "'api.key' di folder ini. Atau jalankan 'python main.py' sekali."
-    )
+_API_KEY_VERIFIED = False
 
-BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+def ensure_api_key_valid() -> bool:
+    """Verifikasi API key secara lazy (saat dibutuhkan), bukan saat import.
+
+    Menghindari network call + SystemExit pada cold-start Vercel. Dipanggil
+    satu kali dari main() (CLI) dan dari awal handle_update (webhook).
+    """
+    global API_KEY, _API_KEY_VERIFIED
+    if _API_KEY_VERIFIED and API_KEY:
+        return True
+    if not API_KEY:
+        API_KEY = load_api_key()
+    if API_KEY and verify_api_key(API_KEY):
+        _API_KEY_VERIFIED = True
+        return True
+    return False
 
 sessions = init_tg_sessions(API_KEY)
 
@@ -84,7 +102,8 @@ def get_short_id(data: str) -> str:
 
 
 def tg_api(method: str, payload: dict) -> dict:
-    resp = requests.post(f"{BASE_URL}/{method}", json=payload, timeout=45)
+    base_url = f"https://api.telegram.org/bot{_bot_token()}"
+    resp = requests.post(f"{base_url}/{method}", json=payload, timeout=45)
     return resp.json()
 
 
@@ -958,6 +977,12 @@ def _handle_command(chat_id: int, uid: int, text: str):
 
 
 def handle_update(update: dict):
+    # Webhook di Vercel: verifikasi key secara lazy; tanpa key jangan crash,
+    # cukup lewati (handlers butuh API_KEY untuk request ke XL).
+    if not API_KEY:
+        print("handle_update: API key belum tersedia; abaikan update")
+        return
+
     if "callback_query" in update:
         handle_callback_query(update["callback_query"])
         return
@@ -1010,6 +1035,21 @@ def handle_update(update: dict):
 
 
 def main():
+    # Validasi config di sini sehingga `python bot.py` tetap memberi pesan
+    # jelas, sementara `import bot` untuk Vercel tidak melempar SystemExit.
+    if not BOT_TOKEN:
+        raise SystemExit(
+            "BOT_TOKEN tidak ditemukan di .env. "
+            "Buat bot di @BotFather lalu tambahkan BOT_TOKEN=<token> ke .env"
+        )
+    if not os.getenv("API_KEY"):
+        raise SystemExit("API_KEY tidak ditemukan di .env")
+    if not ensure_api_key_valid():
+        raise SystemExit(
+            "API key tidak ditemukan atau tidak valid.\n"
+            "Dapatkan dari bot @fykxt_bot (kirim /viewkey), lalu simpan ke file\n"
+            "'api.key' di folder ini. Atau jalankan 'python main.py' sekali."
+        )
     print("Bot sedang berjalan... (Ctrl+C untuk berhenti)")
     offset = 0
     while True:

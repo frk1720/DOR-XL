@@ -16,13 +16,22 @@ from app.client.encrypt import (
 )
 
 BASE_CIAM_URL = os.getenv("BASE_CIAM_URL")
-if not BASE_CIAM_URL:
-    raise ValueError("BASE_CIAM_URL environment variable not set")
-
 BASIC_AUTH = os.getenv("BASIC_AUTH")
 AX_DEVICE_ID = os.getenv("AX_DEVICE_ID") or ax_device_id()
 AX_FP = load_ax_fp()
 UA = os.getenv("UA")
+
+
+def _require_ciam_url() -> str:
+    """Return BASE_CIAM_URL or raise a clear, targeted error at call time.
+
+    Deferred here (instead of at import) so the module imports cleanly on a
+    Vercel cold start even when the env var is missing. Callers that build a
+    URL will surface the missing configuration on their first real request.
+    """
+    if not BASE_CIAM_URL:
+        raise ValueError("BASE_CIAM_URL environment variable not set")
+    return BASE_CIAM_URL
 
 def validate_contact(contact: str) -> bool:
     if not contact.startswith("628") or len(contact) > 14:
@@ -34,7 +43,8 @@ def get_otp(contact: str) -> str:
     if not validate_contact(contact):
         return None
     
-    url = BASE_CIAM_URL + "/realms/xl-ciam/auth/otp"
+    base_ciam_url = _require_ciam_url()
+    url = base_ciam_url + "/realms/xl-ciam/auth/otp"
 
     querystring = {
         "contact": contact,
@@ -87,7 +97,8 @@ def get_otp(contact: str) -> str:
 
 def extend_session(subscriber_id: str) -> str:
     b64_subscriber_id = base64.b64encode(subscriber_id.encode()).decode()
-    url = f"{BASE_CIAM_URL}/realms/xl-ciam/auth/extend-session"
+    base_ciam_url = _require_ciam_url()
+    url = f"{base_ciam_url}/realms/xl-ciam/auth/extend-session"
 
     querystring = {
         "contact": b64_subscriber_id,
@@ -167,7 +178,8 @@ def submit_otp(
         print("Unsupported contact type")
         return None
 
-    url = BASE_CIAM_URL + "/realms/xl-ciam/protocol/openid-connect/token"
+    base_ciam_url = _require_ciam_url()
+    url = base_ciam_url + "/realms/xl-ciam/protocol/openid-connect/token"
 
     now_gmt7 = datetime.now(timezone(timedelta(hours=7)))
     ts_for_sign = ts_gmt7_without_colon(now_gmt7)
@@ -207,7 +219,8 @@ def submit_otp(
         return None
 
 def get_new_token(api_key: str, refresh_token: str, subscriber_id: str) -> str:
-    url = BASE_CIAM_URL + "/realms/xl-ciam/protocol/openid-connect/token"
+    base_ciam_url = _require_ciam_url()
+    url = base_ciam_url + "/realms/xl-ciam/protocol/openid-connect/token"
 
     now = datetime.now(timezone(timedelta(hours=7)))
     ax_request_at = now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "+0700"
@@ -299,10 +312,11 @@ def get_new_token(api_key: str, refresh_token: str, subscriber_id: str) -> str:
     return body
 
 def get_auth_code(tokens: dict, pin: str, msisdn: str):
-    url = BASE_CIAM_URL + "/ciam/auth/authorization-token/generate"
+    base_ciam_url = _require_ciam_url()
+    url = base_ciam_url + "/ciam/auth/authorization-token/generate"
 
-    parsed = urlparse(BASE_CIAM_URL)
-    host_header = parsed.netloc or BASE_CIAM_URL.replace("https://", "")
+    parsed = urlparse(base_ciam_url)
+    host_header = parsed.netloc or base_ciam_url.replace("https://", "")
 
     now = datetime.now(timezone(timedelta(hours=7)))
     ax_request_at = now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "+0700"
