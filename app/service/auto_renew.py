@@ -10,8 +10,21 @@ from app.type_dict import PaymentItem
 
 
 QUOTA_PATH = "api/v8/packages/quota-details"
-IG_THRESHOLD = 0  # Keep existing behavior: purchase only at zero/not found.
+IG_THRESHOLD = 0  # Backward-compat constant; runtime threshold diambil dari env.
 PURCHASE_COOLDOWN_SECONDS = 30 * 60
+
+
+def _renew_threshold_bytes() -> int:
+    """Ambang pembelian (byte). Default 0 = perilaku lama (renew hanya saat habis).
+
+    Diset lewat env RENEW_THRESHOLD_MB agar worker bisa renew proaktif sebelum
+    kuota benar-benar habis. Default 0 menjaga perilaku cron Vercel tetap sama.
+    """
+    raw = os.environ.get("RENEW_THRESHOLD_MB", "0")
+    try:
+        return max(0, int(float(raw) * 1024 * 1024))
+    except (TypeError, ValueError):
+        return 0
 
 
 class SupabaseStore:
@@ -384,7 +397,7 @@ def process_account(store, account, api_key):
                 "trigger": "quota_unavailable",
             }
 
-        if remaining > IG_THRESHOLD:
+        if remaining > _renew_threshold_bytes():
             store.update_account(account_id, {"locked_until": None, "last_status": "ok", "last_error": None})
             return {**result_prefix, "status": "ok", "remaining": remaining}
 
