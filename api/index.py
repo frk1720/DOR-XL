@@ -67,6 +67,7 @@ def _env_summary() -> dict:
         "BASE_CIAM_URL", "BASIC_AUTH", "AX_DEVICE_ID", "AX_FP", "UA",
         "AES_KEY_ASCII", "CRON_SECRET", "SUPABASE_URL",
         "SUPABASE_SERVICE_ROLE_KEY",
+        "XDATA_KEY", "X_API_BASE_SECRET",
     ]
     return {k: bool(os.getenv(k)) for k in keys}
 
