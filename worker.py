@@ -21,6 +21,7 @@ Environment variables:
 
 Flag CLI:
   --once  jalankan satu siklus lalu berhenti (dipakai untuk smoke test).
+  --help  tampilkan bantuan ini lalu keluar (dipakai untuk cek penggunaan).
 """
 import os
 import sys
@@ -133,7 +134,25 @@ def tick(api_key: str) -> int:
     return interval
 
 
+USAGE = """\
+DOR-XL Auto-Renew IG Worker (always-on polling + auto-refill)
+
+Usage:
+  python worker.py [--once] [--help]
+
+Options:
+  --once      Jalankan satu siklus auto-renew lalu berhenti (smoke test).
+  -h, --help  Tampilkan bantuan ini lalu keluar.
+"""
+
+
 def main() -> int:
+    # --help / -h harus keluar bersih SEBELUM cek api_key / masuk loop,
+    # supaya perintah bantu tidak tanpa sengaja menjalankan worker penuh.
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(USAGE)
+        return 0
+
     api_key = os.getenv("USER_API_KEY") or os.getenv("API_KEY")
     if not api_key:
         print(f"[{_now()}] [worker] USER_API_KEY (atau API_KEY) belum diset. Berhenti.")
