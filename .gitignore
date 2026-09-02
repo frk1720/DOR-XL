@@ -16,3 +16,4 @@ sentry/
 *.json
 active.number
 ssh-key-2026-09-01.key
+tg_session-*.py
