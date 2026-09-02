@@ -64,22 +64,30 @@ def _notify_telegram(chat_id, text: str) -> None:
         return
     if not chat_id:
         return
+        
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    
     try:
-        resp = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            },
-            timeout=30,
-        )
+        resp = requests.post(url, json=payload, timeout=30)
+        # Jika gagal parsing HTML (biasanya 400 Bad Request karena karakter < atau > di error)
+        if resp.status_code == 400 and "parse_mode" in payload:
+            payload.pop("parse_mode")
+            resp = requests.post(url, json=payload, timeout=30)
+            
         resp.raise_for_status()
         print(f"[{_now()}] [worker] Notifikasi terkirim ke chat {chat_id}")
     except Exception as exc:
-        # Hanya log nama exception; jangan bocorkan token/chat_id penuh.
-        print(f"[{_now()}] [worker] Gagal kirim notifikasi: {exc.__class__.__name__}")
+        # Ekstrak detail error dari response jika ada, tanpa membocorkan token
+        err_msg = str(exc)
+        if hasattr(exc, 'response') and exc.response is not None:
+            err_msg = f"{exc.response.status_code} - {exc.response.text}"
+        print(f"[{_now()}] [worker] Gagal kirim notifikasi ke {chat_id}: {err_msg}")
 
 
 _service = None
