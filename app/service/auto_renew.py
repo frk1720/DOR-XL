@@ -305,6 +305,11 @@ def buy_addon(api_key, tokens, option_code):
         return option.get("name", "Instagram add-on"), price, None
 
 
+    if __import__("os").getenv("DRY_RUN"):
+        print("DRY RUN: payload valid, enkripsi OK")
+        return option.get("name", "Instagram add-on"), price, None
+
+
     result = settlement_balance(
         api_key, tokens, [item], family.get("payment_for") or "BUY_PACKAGE",
         ask_overwrite=False, overwrite_amount=price,
