@@ -29,6 +29,7 @@ import time
 import signal
 from datetime import datetime, timedelta, timezone
 
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -53,6 +54,32 @@ def _critical_bytes() -> int:
 
 def _now() -> str:
     return datetime.now(WIB).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _notify_telegram(chat_id, text: str) -> None:
+    """Kirim notifikasi via Telegram API. Gagal-notif tidak boleh mematikan worker."""
+    token = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN")
+    if not token:
+        print(f"[{_now()}] [worker] TELEGRAM_BOT_TOKEN belum diset; skip notifikasi")
+        return
+    if not chat_id:
+        return
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        print(f"[{_now()}] [worker] Notifikasi terkirim ke chat {chat_id}")
+    except Exception as exc:
+        # Hanya log nama exception; jangan bocorkan token/chat_id penuh.
+        print(f"[{_now()}] [worker] Gagal kirim notifikasi: {exc.__class__.__name__}")
 
 
 _service = None
@@ -102,6 +129,8 @@ def tick(api_key: str) -> int:
 
     for r in results:
         status = r.get("status")
+        chat_id = r.get("notify_chat_id")
+
         if status == "ok":
             ok += 1
             try:
@@ -110,8 +139,21 @@ def tick(api_key: str) -> int:
                 pass
         elif status == "purchased":
             purchased += 1
+            if chat_id:
+                balance_remaining = r.get("balance_remaining")
+                balance_text = f"Rp {balance_remaining:,}" if isinstance(balance_remaining, int) else "Tidak tersedia"
+                text = (
+                    f"✅ Auto-renew berhasil untuk {r.get('number')}\n"
+                    f"Paket: {r.get('package')}\n"
+                    f"Harga: Rp {r.get('price', 0):,}\n"
+                    f"Sisa pulsa: {balance_text}"
+                )
+                _notify_telegram(chat_id, text)
         elif status == "error":
             errored += 1
+            if chat_id:
+                text = f"❌ Auto-renew gagal untuk {r.get('number')}: {r.get('error')}"
+                _notify_telegram(chat_id, text)
         else:
             skipped += 1
 
