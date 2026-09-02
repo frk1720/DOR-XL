@@ -51,6 +51,7 @@ def balance_allotment(
         access_token=tokens["access_token"],
         msisdn=receiver_msisdn,
         amount=amount,
+        sig_time_sec=sig_time_sec,
     )
     
     headers = {

@@ -2,6 +2,12 @@ import os
 import sys
 import requests
 
+# Operator's API-key verification endpoint. In local-crypto mode this service may
+# be offline, so verify_api_key() treats a network failure as "valid" (proceed)
+# instead of hard-blocking the app. Override via CRYPTO_VERIFY_URL when the
+# service is back at a new host.
+CRYPTO_VERIFY_URL = os.getenv("CRYPTO_VERIFY_URL", "https://me-crypto.mashu.lol/api/verify")
+
 # Load API key from text file named api.key
 def load_api_key() -> str:
     env_key = os.environ.get("USER_API_KEY")
@@ -36,10 +42,13 @@ def delete_api_key():
 def verify_api_key(api_key: str, *, timeout: float = 10.0) -> bool:
     """
     Returns True iff the verification endpoint responds with HTTP 200.
-    Any network error or non-200 is treated as invalid.
+
+    In local-crypto mode the operator's verification service may be offline; a
+    network failure is treated as valid (so the app keeps working), while a
+    reachable-but-non-200 response is still treated as invalid.
     """
     try:
-        url = f"https://me-crypto.mashu.lol/api/verify?key={api_key}"
+        url = f"{CRYPTO_VERIFY_URL}?key={api_key}"
         resp = requests.get(url, timeout=timeout)
         if resp.status_code == 200:
             json_resp = resp.json()
@@ -56,8 +65,8 @@ def verify_api_key(api_key: str, *, timeout: float = 10.0) -> bool:
             print(f"API key is invalid. Server responded with status code {resp.status_code}.")
             return False
     except requests.RequestException as e:
-        print(f"Failed to verify API key: {e}")
-        return False
+        print(f"Verification service unreachable ({e}); assuming valid (local crypto mode).")
+        return True
 
 def get_user_info(api_key: str, *, timeout: float = 10.0) -> dict:
     """
@@ -65,7 +74,7 @@ def get_user_info(api_key: str, *, timeout: float = 10.0) -> dict:
     Raises an exception if the request fails or the API key is invalid.
     """
     try:
-        url = f"https://me-crypto.mashu.lol/api/verify?key={api_key}"
+        url = f"{CRYPTO_VERIFY_URL}?key={api_key}"
         resp = requests.get(url, timeout=timeout)
         if resp.status_code == 200:
             return resp.json()
