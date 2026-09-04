@@ -40,3 +40,12 @@ otify_chat_id secara dinamis langsung dari tabel Supabase uto_renew_accounts.
   - **Token cache in-memory per subscriber_id** (TTL 8 menit = 480 detik sesuai lifespan `id_token` CIAM): `_get_cached_token()` dipakai sebelum memanggil CIAM, hanya refresh saat TTL habis. Auto-fallback: cache dibersihkan dan token di-refresh saat respons mengindikasikan 401/token invalid (`_looks_like_token_error`). Supabase hanya di-PATCH saat refresh token benar-benar berotasi.
   - **Multi-account staggering**: jeda acak 1,5–3,0 detik antar akun di `run_auto_renew()` agar tidak terjadi burst request serempak ke API XL.
 - **Result**: Terverifikasi di VPS OCI — log menunjukkan `polling normal 28-35s (jitter), kritis 13-18s (jitter), ambang kritis 50 MB, sleep dini hari 02:00-06:00 WIB aktif`; token hanya di-refresh sekali saat cold start lalu dipakai dari cache pada siklus berikutnya; semua akun `1 ok` tanpa error; service stabil (`NRestarts=0`).
+
+
+## 7. Rotasi Log Harian worker.log (Systemd Timer @ 00:00 WIB)
+- **Problem**: `worker.log` memakai mode `append:` systemd sehingga menumpuk tanpa batas; user hanya butuh progress 24 jam terakhir (00:00–23:59 WIB).
+- **Solution**: Unit systemd baru di VPS OCI:
+  - `dor-worker-logrotate.timer` → `OnCalendar=*-*-* 17:00:00 UTC` (`Persistent=true`), yang bertepatan dengan **00:00 WIB**.
+  - `dor-worker-logrotate.service` (oneshot) menjalankan `deploy/OCI/rotate_worker_log.sh`.
+  - Script: `cp worker.log → worker.log.old`, lalu `truncate -s 0 worker.log` (inode & file descriptor worker tetap valid — worker tidak perlu restart), lalu menulis marker `[.... WIB] === NEW 24H LOG CYCLE STARTED ===`.
+- **Result**: Terverifikasi di VPS — `worker.log` selalu berisi data hari ini saja; `worker.log.old` menyimpan 1 hari sebelumnya sebagai cadangan; worker tetap `active` dan menulis normal setelah truncate; timer tampil di `systemctl list-timers` dengan NEXT `17:00:00 UTC`. Artefak disimpan di `deploy/OCI/` (terversi git).
