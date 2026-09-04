@@ -1,4 +1,6 @@
 import os
+import random
+import time
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -7,6 +9,87 @@ from app.client.ciam import get_new_token
 from app.client.engsel import get_balance, get_package, send_api_request
 from app.client.purchase.balance import settlement_balance
 from app.type_dict import PaymentItem
+
+
+# ---------------------------------------------------------------------------
+# 🔒 TOKEN CACHE IN-MEMORY PER ACCOUNT (TTL 8 MENIT / 480 DETIK)
+# ---------------------------------------------------------------------------
+# Key: subscriber_id (str), Value: dict dengan tokens, obtained_at, expires_at
+# Digunakan untuk menghindari call get_new_token() berulang ke CIAM XL tiap 30s.
+# Hanya refresh token saat TTL habis atau saat error 401 (token invalid).
+# ---------------------------------------------------------------------------
+_TOKEN_CACHE = {}
+DEFAULT_TTL_SECONDS = 480  # 8 menit sesuai lifespan id_token
+
+
+def _get_cached_token(subscriber_id: str, api_key: str) -> dict | None:
+    """
+    Return cached tokens if still valid (< TTL).
+    If cache expired or missing, return None to trigger refresh.
+    """
+    global _TOKEN_CACHE
+    
+    if not subscriber_id:
+        return None
+    
+    entry = _TOKEN_CACHE.get(subscriber_id)
+    if not entry:
+        return None
+    
+    now = datetime.now(timezone.utc)
+    if now >= entry["expires_at"]:
+        # TTL sudah kadaluwarsa, hapus dari cache dan return None
+        print(f"[{__name__}] Token expired for sub_id {subscriber_id[:8]}...")
+        del _TOKEN_CACHE[subscriber_id]
+        return None
+    
+    return entry.get("tokens")
+
+
+def _set_cache_token(subscriber_id: str, tokens: dict):
+    """
+    Set new token into memory cache with TTL expiry.
+    """
+    global _TOKEN_CACHE
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=DEFAULT_TTL_SECONDS)
+    
+    _TOKEN_CACHE[subscriber_id] = {
+        "tokens": tokens,
+        "obtained_at": now,
+        "expires_at": expires_at,
+    }
+    print(f"[{__name__}] Token cached for sub_id {subscriber_id[:8]}... (valid until ~{expires_at.strftime('%H:%M:%S')} UTC)")
+
+
+def _clear_cache_token(subscriber_id: str):
+    """
+    Clear specific account's token from cache.
+    Called when token is detected as invalid.
+    """
+    global _TOKEN_CACHE
+    if subscriber_id in _TOKEN_CACHE:
+        del _TOKEN_CACHE[subscriber_id]
+
+
+def _get_fresh_tokens(api_key: str, refresh_token: str, subscriber_id: str) -> dict:
+    """Minta token baru ke CIAM lalu simpan ke cache. Throw bila gagal."""
+    tokens = get_new_token(api_key, refresh_token, subscriber_id)
+    if not tokens:
+        raise RuntimeError("CIAM tidak mengembalikan token baru")
+    _set_cache_token(subscriber_id, tokens)
+    return tokens
+
+
+def _obtain_tokens(api_key: str, refresh_token: str, subscriber_id: str) -> dict:
+    """Ambil token: pakai cache bila masih segar (<8 mnt), refresh bila perlu.
+
+    Return dict tokens. Fungsi ini TIDAK menyentuh Supabase (hemat write I/O).
+    """
+    cached = _get_cached_token(subscriber_id, api_key)
+    if cached:
+        return cached
+    return _get_fresh_tokens(api_key, refresh_token, subscriber_id)
 
 
 QUOTA_PATH = "api/v8/packages/quota-details"
@@ -125,7 +208,38 @@ def _record_transaction_safely(store, account, status, amount=0, package_name=No
 
 
 
-def get_quota_details(api_key, id_token):
+def _looks_like_token_error(result) -> bool:
+    """Deteksi indikator token invalid dari respons API.
+
+    `send_api_request` mengembalikan string mentah (resp.text) saat decrypt
+    gagal — bisa karena token invalid (401) atau error teknis lain. Fast-path
+    ini hanya memicu refresh token bila string memuat penanda 401/token.
+    """
+    if isinstance(result, dict):
+        status = str(result.get("status", "")).upper()
+        return "UNAUTHORIZED" in status or "TOKEN" in status
+    if isinstance(result, str):
+        lowered = result.lower()
+        markers = (
+            "401",
+            "unauthorized",
+            "invalid token",
+            "token expired",
+            "session expired",
+            "access_token",
+            "id_token",
+        )
+        return any(marker in lowered for marker in markers)
+    return False
+
+
+def get_quota_details(api_key, id_token, subscriber_id=None, refresh_token=None, _retry=True):
+    """Ambil data kuota dari API XL.
+
+    Self-healing: bila id_token sudah invalid di tengah polling (<8 mnt TTL),
+    helper ini otomatis meminta token baru ke CIAM lalu mencoba sekali lagi,
+    tanpa perlu menunggu siklus berikutnya.
+    """
     result = send_api_request(
         api_key,
         QUOTA_PATH,
@@ -133,9 +247,19 @@ def get_quota_details(api_key, id_token):
         id_token,
         "POST",
     )
+    if isinstance(result, dict) and result.get("status") == "SUCCESS":
+        return result.get("data", {}).get("quotas", [])
+
+    # --- Token invalid / perlu refresh ---
+    if _retry and subscriber_id and refresh_token and _looks_like_token_error(result):
+        _clear_cache_token(subscriber_id)
+        fresh = _get_fresh_tokens(api_key, refresh_token, subscriber_id)
+        return get_quota_details(api_key, fresh["id_token"], _retry=False)
+
     if not isinstance(result, dict) or result.get("status") != "SUCCESS":
         raise RuntimeError("Gagal mengambil data kuota")
     return result.get("data", {}).get("quotas", [])
+
 
 
 def _instagram_quota_matches(quotas):
@@ -344,16 +468,27 @@ def process_account(store, account, api_key):
         if not subscriber_id:
             raise RuntimeError("subscriber_id di Supabase kosong")
 
-        tokens = get_new_token(api_key, refresh_token, subscriber_id)
+        # Ambil token: pakai cache in-memory bila masih valid (<8 mnt), baru
+        # sentuh CIAM kalau cache kosong/kedaluwarsa. Hemat banget request auth.
+        tokens = _obtain_tokens(api_key, refresh_token, subscriber_id)
         if not tokens:
             raise RuntimeError("CIAM tidak mengembalikan token baru")
 
-        quotas = get_quota_details(api_key, tokens["id_token"])
+        quotas = get_quota_details(
+            api_key,
+            tokens["id_token"],
+            subscriber_id=subscriber_id,
+            refresh_token=refresh_token,
+        )
         remaining, found = instagram_remaining(quotas)
-        store.update_account(account_id, {
-            "refresh_token": tokens.get("refresh_token", account["refresh_token"]),
-            "last_checked_at": datetime.now(timezone.utc).isoformat(),
-        })
+        # Supabase hanya di-update ketika refresh token benar-benar berubah
+        # (rotasi refresh token dari CIAM) + waktu cek terakhir. Kalau pakai
+        # cache (token tidak disentuh), kita hemat satu operasi PATCH.
+        patch_values = {"last_checked_at": datetime.now(timezone.utc).isoformat()}
+        new_refresh_token = tokens.get("refresh_token")
+        if new_refresh_token and new_refresh_token != account["refresh_token"]:
+            patch_values["refresh_token"] = new_refresh_token
+        store.update_account(account_id, patch_values)
 
         cooldown_remaining = purchase_cooldown_remaining(account.get("last_purchase_at"))
 
@@ -440,4 +575,19 @@ def process_account(store, account, api_key):
 def run_auto_renew(api_key):
     store = SupabaseStore()
     accounts = store.claim_accounts()
-    return [process_account(store, account, api_key) for account in accounts]
+
+    results = []
+    for index, account in enumerate(accounts):
+        result = process_account(store, account, api_key)
+        results.append(result)
+        # Staggering / nafas antar akun agar tidak terjadi burst request
+        # serempak. Jeda acak 1.5-3.0 detik antar nomor; cukup lama untuk
+        # terlihat natural di mata WAF, cukup cepat untuk tetap responsif.
+        if index < len(accounts) - 1:
+            breath = random.uniform(1.5, 3.0)
+            print(
+                f"[{__name__}] Staggering: istirahat {breath:.1f}s"
+                f" sebelum akun berikutnya ({index + 2}/{len(accounts)})"
+            )
+            time.sleep(breath)
+    return results

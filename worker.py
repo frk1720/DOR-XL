@@ -7,16 +7,25 @@ via systemd (dor-worker.service, Restart=always). Perintah manual: python worker
 Loop tak berujung:
   1. Ambil nomor aktif dari Supabase lewat run_auto_renew() (sudah punya lock
      anti double-process, cooldown 30 menit, dan try/except per nomor).
-  2. Polling adaptif: 10 menit normal, tapi 3 menit bila ada nomor sehat yang
-     sisa kuotanya sudah di bawah WORKER_CRITICAL_MB.
+  2. Polling adaptif + jitter acak (mode stealth anti-bot):
+       - Normal   : WORKER_POLL_NORMAL detik (default 600); bila <= 60 maka
+                    dipakai jitter acak 28-35s.
+       - Kritis   : WORKER_POLL_CRITICAL detik (default 180); bila <= 30 maka
+                    dipakai jitter acak 13-18s. Kritis = ada nomor sehat dengan
+                    sisa kuota < WORKER_CRITICAL_MB.
+       - Dini hari (02:00-06:00 WIB): polling dilambatkan ke 300-420s (5-7 mnt)
+         selama kuota aman, untuk memutus pola request 24 jam non-stop. Bila
+         kuota kritis, interval tetap gesit agar auto-renew tidak telat.
   3. Auto-renew: terjadi saat sisa kuota <= RENEW_THRESHOLD_MB (default 0 =
      perilaku lama, renew hanya saat habis).
+  4. Staggering antar akun: jeda acak 1.5-3.0s di run_auto_renew agar tidak
+     terjadi burst request serempak ke API XL.
 
 Environment variables:
   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY  (wajib, dipakai oleh auto_renew)
   USER_API_KEY atau API_KEY                 (wajib, API XL)
-  WORKER_POLL_NORMAL    default 600   detik (10 menit)
-  WORKER_POLL_CRITICAL  default 180   detik (3 menit)
+  WORKER_POLL_NORMAL    default 600   detik (normal; <=60 -> jitter 28-35s)
+  WORKER_POLL_CRITICAL  default 180   detik (kritis; <=30 -> jitter 13-18s)
   WORKER_CRITICAL_MB    default 100   MB (ambang polling kritis)
   RENEW_THRESHOLD_MB    default 0     MB (ambang pembelian; >0 = renew sebelum habis)
 
@@ -25,6 +34,7 @@ Flag CLI:
   --help  tampilkan bantuan ini lalu keluar (dipakai untuk cek penggunaan).
 """
 import os
+import random
 import sys
 import time
 import signal
@@ -110,11 +120,61 @@ def _get_run_auto_renew():
     return _service
 
 
-def _poll_interval(min_remaining: "int | None") -> int:
-    """Return interval polling (detik) berdasarkan sisa kuota terendah."""
+def _is_sleep_hours(wib_now=None) -> bool:
+    """Deteksi jam dini hari (02:00 s.d. 06:00 WIB) untuk sleep mode otomatis.
+
+    Memutus pola request 24 jam non-stop agar IP VPS tidak terlihat seperti
+    background scraper oleh WAF XL.
+    """
+    wib_now = wib_now or datetime.now(WIB)
+    hour = wib_now.hour
+    return 2 <= hour < 6
+
+
+def _sleep_hours_interval(min_remaining: "int | None") -> int:
+    """Interval saat dini hari. Lambat (5-7 menit) bila kuota aman.
+
+    Bila kuota kritis (< WORKER_CRITICAL_MB), tetap pakai interval kritis
+    agar auto-renew tidak telat, karena memutus sambungan saat tidur = pulsa
+    hangus percuma.
+    """
     if min_remaining is not None and min_remaining < _critical_bytes():
-        return _env_int("WORKER_POLL_CRITICAL", 180)
-    return _env_int("WORKER_POLL_NORMAL", 600)
+        # Tetap gesit walau dini hari: kuota menipis butuh respon cepat.
+        base = _env_int("WORKER_POLL_CRITICAL", 180)
+        if base <= 30:
+            return random.randint(13, 18)
+        return random.randint(base - 2, base + 3)
+    return random.randint(300, 420)
+
+
+def _sleep_seconds(min_remaining: "int | None", interval: int) -> int:
+    """Terapkan sleep-mode dini hari bila sedang jam 02:00-06:00 WIB."""
+    if _is_sleep_hours():
+        slowed = _sleep_hours_interval(min_remaining)
+        if slowed > interval:
+            print(
+                f"[{_now()}] [worker] Dini hari terdeteksi: perlambat polling"
+                f" {interval}s -> {slowed}s (mode tidur, putus pola 24 jam)"
+            )
+            return slowed
+    return interval
+
+
+def _poll_interval(min_remaining: "int | None") -> int:
+    """Return interval polling (detik) berdasarkan sisa kuota terendah + jitter."""
+    if min_remaining is not None and min_remaining < _critical_bytes():
+        # KRITIS (< ambang): polling gesit 13-18 detik (acak) untuk tangkap
+        # pembaruan kuota secepat mungkin saat download 5G agresif.
+        base = _env_int("WORKER_POLL_CRITICAL", 180)
+        if base <= 30:
+            return random.randint(13, 18)
+        return random.randint(base - 2, base + 3)
+
+    # NORMAL (>= ambang): polling tenang + jitter natural (anti-bot pattern)
+    base = _env_int("WORKER_POLL_NORMAL", 600)
+    if base <= 60:
+        return random.randint(28, 35)
+    return random.randint(max(0, base - 30), base + 60)
 
 
 def tick(api_key: str) -> int:
@@ -171,6 +231,7 @@ def tick(api_key: str) -> int:
 
     min_remaining = min(near) if near else None
     interval = _poll_interval(min_remaining)
+    interval = _sleep_seconds(min_remaining, interval)
 
     parts = [f"{ok} ok", f"{purchased} renew"]
     if errored:
@@ -182,7 +243,7 @@ def tick(api_key: str) -> int:
         detail += f" | sisa min {min_remaining // (1024 * 1024)} MB"
     else:
         detail += " | tidak ada nomor sehat"
-    detail += f" -> interval {interval // 60} m"
+    detail += f" -> tidur {interval}s"
 
     print(f"[{_now()}] [worker] {detail}")
     return interval
@@ -218,9 +279,14 @@ def main() -> int:
 
     normal = _env_int("WORKER_POLL_NORMAL", 600)
     critical = _env_int("WORKER_POLL_CRITICAL", 180)
+    # Mode stealth: saat interval <= 60s, worker memakai jitter acak natural
+    # (normal 28-35s, kritis 13-18s) agar tidak terlihat seperti bot statis.
+    normal_desc = "28-35s (jitter)" if normal <= 60 else f"{max(0, normal - 30)}-{normal + 60}s"
+    critical_desc = "13-18s (jitter)" if critical <= 30 else f"{critical - 2}-{critical + 3}s"
     print(
-        f"[{_now()}] [worker] IG worker start | polling normal {normal // 60} m,"
-        f" kritis {critical // 60} m, ambang {_critical_bytes() // (1024 * 1024)} MB"
+        f"[{_now()}] [worker] IG worker start | polling normal {normal_desc},"
+        f" kritis {critical_desc}, ambang kritis {_critical_bytes() // (1024 * 1024)} MB,"
+        f" sleep dini hari 02:00-06:00 WIB aktif"
     )
 
     stop = False
