@@ -1,0 +1,9 @@
+[Unit]
+Description=Rotate and truncate DOR-XL worker.log (Daily 00:00 WIB)
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/DOR-XL
+ExecStart=/bin/bash /home/ubuntu/DOR-XL/deploy/OCI/rotate_worker_log.sh
