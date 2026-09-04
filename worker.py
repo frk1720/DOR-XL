@@ -1,7 +1,8 @@
 """
 worker.py - Always-on adaptive IG quota polling + auto-renew worker.
 
-Dipakai di Render.com Background Worker (start command: python worker.py).
+Dijalankan di VPS Oracle Cloud (OCI Always Free, Ubuntu, /home/ubuntu/DOR-XL)
+via systemd (dor-worker.service, Restart=always). Perintah manual: python worker.py
 
 Loop tak berujung:
   1. Ambil nomor aktif dari Supabase lewat run_auto_renew() (sudah punya lock
