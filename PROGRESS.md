@@ -30,3 +30,13 @@ otify_chat_id secara dinamis langsung dari tabel Supabase uto_renew_accounts.
 
 ## 5. Rekonsiliasi Database (Ledger)
 - Mengonfirmasi pencatatan historis yang presisi. Setiap mutasi pembelian kini dicatat langsung ke tabel uto_renew_transactions, memastikan laporan riwayat (termasuk kompensasi *manual insertion* diagnostik) konsisten dengan pemotongan saldo pulsa pengguna.
+
+
+## 6. Stealth Layers: Jitter, Backoff Dini Hari, Token Cache, Multi-Account Staggering
+- **Problem**: Worker polling dengan interval statis (10 mnt / 3 mnt) terlihat seperti *background scraper* oleh WAF XL; setiap siklus selalu me-refresh token ke CIAM (boros request auth); dan banyak akun diproses serempak (rentan burst / rate-limit).
+- **Solution**:
+  - **Random jitter polling**: interval normal menjadi acak 28–35 detik, interval kritis acak 13–18 detik (aktif saat `WORKER_POLL_NORMAL <= 60` dan `WORKER_POLL_CRITICAL <= 30`). Pola request tidak lagi statis.
+  - **Backoff dini hari (02:00–06:00 WIB)**: saat kuota aman, polling dilambatkan ke 300–420 detik (5–7 mnt) untuk memutus pola 24 jam non-stop; bila kuota kritis, interval tetap gesit agar auto-renew tidak telat.
+  - **Token cache in-memory per subscriber_id** (TTL 8 menit = 480 detik sesuai lifespan `id_token` CIAM): `_get_cached_token()` dipakai sebelum memanggil CIAM, hanya refresh saat TTL habis. Auto-fallback: cache dibersihkan dan token di-refresh saat respons mengindikasikan 401/token invalid (`_looks_like_token_error`). Supabase hanya di-PATCH saat refresh token benar-benar berotasi.
+  - **Multi-account staggering**: jeda acak 1,5–3,0 detik antar akun di `run_auto_renew()` agar tidak terjadi burst request serempak ke API XL.
+- **Result**: Terverifikasi di VPS OCI — log menunjukkan `polling normal 28-35s (jitter), kritis 13-18s (jitter), ambang kritis 50 MB, sleep dini hari 02:00-06:00 WIB aktif`; token hanya di-refresh sekali saat cold start lalu dipakai dari cache pada siklus berikutnya; semua akun `1 ok` tanpa error; service stabil (`NRestarts=0`).
