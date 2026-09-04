@@ -152,6 +152,13 @@ def auto_refill():
         }), 503
 
     try:
+        if os.getenv("CRON_DISABLE_AUTO_REFILL") == "1":
+            return jsonify({
+                "status": "disabled",
+                "detail": "Auto-refill dinonaktifkan di Vercel; daemon OCI (dor-worker.service) yang menangani.",
+                "processed": 0,
+                "results": [],
+            }), 200
         results = run_auto_renew(api_key)
         for result in results:
             chat_id = result.get("notify_chat_id")
@@ -169,9 +176,12 @@ def auto_refill():
                         f"Harga: Rp {result['price']:,}\n"
                         f"Sisa pulsa: {balance_text}"
                     )
-                else:
+                elif result.get("purchase_attempted"):
+                    # Hanya kirim notifikasi gagal bila pembelian paket memang
+                    # dicoba (kuota <= threshold). Error polling rutin cukup
+                    # tercatat di Supabase last_error — tanpa spam Telegram.
                     text = f"❌ Auto-renew gagal untuk {result['number']}: {result['error']}"
-                _notify_telegram(chat_id, text)
+                    _notify_telegram(chat_id, text)
         return jsonify({"status": "ok", "processed": len(results), "results": results}), 200
     except Exception as exc:
         print(f"Auto-refill error: {exc}")

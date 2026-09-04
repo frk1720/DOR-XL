@@ -160,7 +160,10 @@ def tick(api_key: str) -> int:
                 _notify_telegram(chat_id, text)
         elif status == "error":
             errored += 1
-            if chat_id:
+            # Hanya teror Telegram kalau pembelian paket benar-benar dicoba
+            # (kuota <= threshold) dan gagal. Error polling rutin cukup di log
+            # dan Supabase last_error.
+            if chat_id and r.get("purchase_attempted"):
                 text = f"❌ Auto-renew gagal untuk {r.get('number')}: {r.get('error')}"
                 _notify_telegram(chat_id, text)
         else:

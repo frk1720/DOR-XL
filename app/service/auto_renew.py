@@ -432,7 +432,7 @@ def process_account(store, account, api_key):
         if purchase_attempted and not transaction_recorded:
             _record_transaction_safely(store, account, "failed", error=exc)
         store.update_account(account_id, {"locked_until": None, "last_status": "error", "last_error": str(exc)[:500]})
-        return {**result_prefix, "status": "error", "error": str(exc)}
+        return {**result_prefix, "status": "error", "error": str(exc), "purchase_attempted": purchase_attempted}
 
 
 

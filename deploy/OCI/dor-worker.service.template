@@ -1,0 +1,35 @@
+# dor-worker.service.template
+# Template systemd unit untuk DOR-XL Auto-Renew IG Worker (always-on).
+#
+# File ini TIDAK di-copy mentah ke /etc/systemd/system — jalankan
+# install_worker_service.sh yang akan mengisi path repo, python venv, dan
+# .env lalu menulis unit final ke /etc/systemd/system/dor-worker.service.
+#
+# Referensi variabel (di-substitusi oleh installer):
+#   @REPO_DIR@  -> direktori repo berisi worker.py + .env
+#   @PYTHON@    -> path peluncur python (mis. /home/ubuntu/dor-xl/.venv/bin/python)
+#   @ENV_FILE@  -> path file .env
+
+[Unit]
+Description=DOR-XL Auto-Renew IG Worker (always-on polling + auto-refill)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=@REPO_DIR@
+EnvironmentFile=@ENV_FILE@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@PYTHON@ worker.py
+Restart=always
+RestartSec=15
+# Uptime guard: kalau jalan terus-menerus, restart bersih setiap 24 jam agar
+# fingerprint / koneksi tidak "basi". Bisa dihapus bila tidak diinginkan.
+RuntimeMaxSec=86400
+StandardOutput=append:@REPO_DIR@/worker.log
+StandardError=append:@REPO_DIR@/worker.log
+
+[Install]
+WantedBy=multi-user.target
