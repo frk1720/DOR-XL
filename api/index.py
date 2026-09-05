@@ -63,8 +63,9 @@ def _get_services():
 def _env_summary() -> dict:
     """Status boolean env var yang dibutuhkan — TANPA membocorkan nilainya."""
     keys = [
-        "BOT_TOKEN", "API_KEY", "USER_API_KEY", "BASE_API_URL",
-        "BASE_CIAM_URL", "BASIC_AUTH", "AX_DEVICE_ID", "AX_FP", "UA",
+        "BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "API_KEY", "USER_API_KEY", "BASE_API_URL",
+        "BASE_CIAM_URL", "BASIC_AUTH", "AX_DEVICE_ID", "AX_FP", "AX_FP_KEY",
+        "AX_API_SIG_KEY", "UA",
         "AES_KEY_ASCII", "CRON_SECRET", "SUPABASE_URL",
         "SUPABASE_SERVICE_ROLE_KEY",
         "XDATA_KEY", "X_API_BASE_SECRET",

@@ -16,7 +16,12 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 
 XDATA_KEY = os.getenv("XDATA_KEY")
-AX_API_SIG_KEY = os.getenv("AX_API_SIG_KEY") or os.getenv("AX_FP_KEY")
+AX_API_SIG_KEY = (
+    os.getenv("AX_API_SIG_KEY")
+    or os.getenv("AX_FP_KEY")
+    or os.getenv("AX_FP")
+    or "b40d04da-534a-4e2b-ac83-8473c98894df"
+)
 X_API_BASE_SECRET = os.getenv("X_API_BASE_SECRET")
 # Migration fallback: this repo's .env exposes the same value as AES_KEY_ASCII.
 ENCRYPTED_FIELD_KEY = os.getenv("ENCRYPTED_FIELD_KEY") or os.getenv("AES_KEY_ASCII")
@@ -81,6 +86,8 @@ def make_ax_api_signature(
     code: str,
     contact_type: str,
 ) -> str:
+    if not AX_API_SIG_KEY:
+        raise RuntimeError("AX_API_SIG_KEY/AX_FP_KEY belum diset di environment variable!")
     key_bytes = AX_API_SIG_KEY.encode("ascii")
 
     preimage = f"{ts_for_sign}password{contact_type}{contact}{code}openid"
