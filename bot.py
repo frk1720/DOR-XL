@@ -283,13 +283,24 @@ def handle_otp(chat_id: int, uid: int, code: str) -> bool:
     if not re.fullmatch(r"\d{6}", code):
         return False
 
-    tokens = submit_otp(API_KEY, "SMS", contact, code)
+    try:
+        tokens = submit_otp(API_KEY, "SMS", contact, code)
+    except Exception as exc:
+        send_message(chat_id, f"⚠️ Gagal verifikasi OTP: {exc.__class__.__name__}: {exc}")
+        sess["pending_contact"] = None
+        return True
     if not tokens:
         send_message(chat_id, "OTP salah atau kedaluwarsa. Coba /login lagi.")
         sess["pending_contact"] = None
         return True
 
-    sessions.login(uid, tokens, contact)
+    try:
+        sessions.login(uid, tokens, contact)
+    except Exception as exc:
+        send_message(chat_id, f"⚠️ Gagal menyimpan sesi login: {exc.__class__.__name__}: {exc}")
+        sess["pending_contact"] = None
+        return True
+
     sess["pending_contact"] = None
 
     profile = sessions.get_profile_info(uid) or {}

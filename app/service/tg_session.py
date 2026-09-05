@@ -16,42 +16,86 @@ if os.environ.get("VERCEL"):
 _lock = threading.Lock()
 
 
-def _sync_auto_renew_account(number: str, subscriber_id: str, refresh_token: str):
-    """Update an existing auto-renew row without creating unconfigured rows."""
+def _sync_auto_renew_account(number: str, subscriber_id: str, refresh_token: str, chat_id: int = None):
+    """Upsert auto-renew row: insert baru jika belum ada, update jika sudah ada."""
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
     if not supabase_url or not supabase_key or not number or not refresh_token:
         return
 
+    url = supabase_url.rstrip("/")
     headers = {
         "apikey": supabase_key,
         "Authorization": f"Bearer {supabase_key}",
         "Content-Type": "application/json",
         "Accept-Profile": "public",
         "Content-Profile": "public",
-        "Prefer": "return=representation",
+        "Prefer": "return=representation,resolution=merge-duplicates",
     }
+
+    # Ambil option_code default dari akun lain yang sudah ada
+    default_option_code = ""
     try:
-        response = requests.patch(
-            f"{supabase_url.rstrip('/')}/rest/v1/auto_renew_accounts?number=eq.{number}",
+        resp = requests.get(
+            f"{url}/rest/v1/auto_renew_accounts?select=option_code&limit=1",
             headers=headers,
-            json={
-                "subscriber_id": subscriber_id or "",
-                "refresh_token": refresh_token,
-                "last_error": None,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            rows = resp.json()
+            if rows and isinstance(rows, list) and rows[0].get("option_code"):
+                default_option_code = rows[0]["option_code"]
+    except Exception as exc:
+        print(f"[auto-renew sync] gagal ambil default option_code: {exc}")
+
+    # Payload PATCH (tanpa number karena sudah ada di query param)
+    patch_payload = {
+        "subscriber_id": subscriber_id or "",
+        "refresh_token": refresh_token,
+        "last_error": None,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if chat_id is not None:
+        patch_payload["notify_chat_id"] = str(chat_id)
+    if default_option_code:
+        patch_payload["option_code"] = default_option_code
+        patch_payload["enabled"] = True
+
+    try:
+        # Coba PATCH dulu (update row yang sudah ada)
+        response = requests.patch(
+            f"{url}/rest/v1/auto_renew_accounts?number=eq.{number}",
+            headers=headers,
+            json=patch_payload,
             timeout=10,
         )
         response.raise_for_status()
         rows = response.json() if response.content else []
-        if not rows:
-            print(f"[auto-renew sync] row nomor {number} tidak ditemukan di Supabase")
-        else:
-            print(f"[auto-renew sync] row nomor {number} berhasil diperbarui")
+        if rows:
+            print(f"[auto-renew sync] update nomor {number} berhasil")
+            return
+
+        # Row belum ada, INSERT baru
+        insert_payload = {
+            "number": number,
+            "subscriber_id": subscriber_id or "",
+            "refresh_token": refresh_token,
+            "option_code": default_option_code or "",
+            "enabled": bool(default_option_code),
+            "notify_chat_id": str(chat_id) if chat_id is not None else None,
+            "last_error": None,
+        }
+        response = requests.post(
+            f"{url}/rest/v1/auto_renew_accounts",
+            headers=headers,
+            json=insert_payload,
+            timeout=10,
+        )
+        response.raise_for_status()
+        print(f"[auto-renew sync] insert nomor {number} berhasil")
     except Exception as exc:
         # Login must still succeed when Supabase is temporarily unavailable.
-        print(f"[auto-renew sync] gagal menyinkronkan {number}: {exc}")
+        print(f"[auto-renew sync] gagal upsert {number}: {exc}")
 
 def _supabase_headers():
     """Headers REST untuk service-role Supabase; None saat env belum diset."""
@@ -275,6 +319,7 @@ class TgSessionManager:
             active_num,
             prof.get("subscriber_id", ""),
             tokens.get("refresh_token", ""),
+            uid,
         )
         return sess
 
