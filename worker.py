@@ -195,6 +195,7 @@ def tick(api_key: str) -> int:
     total = len(results)
     ok = purchased = errored = skipped = 0
     near: list[int] = []
+    quota_details: list[tuple[str, int]] = []
     error_details: list[str] = []
     skip_details: list[str] = []
 
@@ -205,7 +206,10 @@ def tick(api_key: str) -> int:
         if status == "ok":
             ok += 1
             try:
-                near.append(int(r.get("remaining", 0) or 0))
+                rem_bytes = int(r.get("remaining", 0) or 0)
+                near.append(rem_bytes)
+                rem_mb = rem_bytes // (1024 * 1024)
+                quota_details.append((str(r.get("number")), rem_mb))
             except (TypeError, ValueError):
                 pass
         elif status == "purchased":
@@ -260,11 +264,19 @@ def tick(api_key: str) -> int:
         detail += " | skip: " + "; ".join(skip_details)
     if error_details:
         detail += " | error: " + "; ".join(error_details)
-    if not error_details and min_remaining is not None:
-        detail += f" | sisa min {min_remaining // (1024 * 1024)} MB"
+
+    min_mb = min_remaining // (1024 * 1024) if min_remaining is not None else None
+    if min_mb is not None:
+        detail += f" (min {min_mb} MB)"
     detail += f" -> tidur {interval}s"
 
     print(f"[{_now()}] [worker] {detail}")
+
+    if quota_details:
+        for i, (num, mb) in enumerate(quota_details):
+            prefix = "  └─" if i == len(quota_details) - 1 else "  ├─"
+            print(f"{prefix} {num} : {mb} MB")
+
     return interval
 
 
