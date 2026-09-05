@@ -195,6 +195,8 @@ def tick(api_key: str) -> int:
     total = len(results)
     ok = purchased = errored = skipped = 0
     near: list[int] = []
+    error_details: list[str] = []
+    skip_details: list[str] = []
 
     for r in results:
         status = r.get("status")
@@ -220,6 +222,9 @@ def tick(api_key: str) -> int:
                 _notify_telegram(chat_id, text)
         elif status == "error":
             errored += 1
+            num = r.get("number") or "?"
+            err = str(r.get("error") or "").strip()
+            error_details.append(f"{num}: {err}" if err else num)
             # Hanya teror Telegram kalau pembelian paket benar-benar dicoba
             # (kuota <= threshold) dan gagal. Error polling rutin cukup di log
             # dan Supabase last_error.
@@ -228,6 +233,18 @@ def tick(api_key: str) -> int:
                 _notify_telegram(chat_id, text)
         else:
             skipped += 1
+            num = r.get("number") or "?"
+            st = r.get("status")
+            if st == "quota_unavailable":
+                skip_details.append(f"{num}: paket induk Xtra Combo Plus 3GB tidak tersedia")
+            elif st == "purchase_cooldown":
+                cd = r.get("cooldown_remaining")
+                if isinstance(cd, (int, float)) and cd > 0:
+                    skip_details.append(f"{num}: cooldown pembelian {int(cd)}s tersisa")
+                else:
+                    skip_details.append(f"{num}: cooldown pembelian")
+            else:
+                skip_details.append(f"{num}: status {st!r} tidak dikenal")
 
     min_remaining = min(near) if near else None
     interval = _poll_interval(min_remaining)
@@ -239,10 +256,12 @@ def tick(api_key: str) -> int:
     if skipped:
         parts.append(f"{skipped} skip")
     detail = f"{total} diproses | " + ", ".join(parts)
-    if min_remaining is not None:
+    if skip_details:
+        detail += " | skip: " + "; ".join(skip_details)
+    if error_details:
+        detail += " | error: " + "; ".join(error_details)
+    if not error_details and min_remaining is not None:
         detail += f" | sisa min {min_remaining // (1024 * 1024)} MB"
-    else:
-        detail += " | tidak ada nomor sehat"
     detail += f" -> tidur {interval}s"
 
     print(f"[{_now()}] [worker] {detail}")

@@ -67,18 +67,25 @@ def send_api_request(
     }
 
     url = f"{base_url}/{path}"
-    resp = requests.post(url, headers=headers, data=json.dumps(body), timeout=30)
-    
-    # print(f"Headers: {json.dumps(headers, indent=2)}")
-    # print(f"Response body: {resp.text}")
+    try:
+        resp = requests.post(url, headers=headers, data=json.dumps(body), timeout=30)
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"API XL request gagal: {exc.__class__.__name__} "
+            f"(cek BASE_API_URL/jaringan)"
+        ) from exc
 
     try:
         decrypted_body = decrypt_xdata(api_key, json.loads(resp.text))
-        # print(f"Decrypted body: {json.dumps(decrypted_body, indent=2)}")
         return decrypted_body
     except Exception as e:
         print("[decrypt err]", e)
-        return resp.text
+        snippet = (resp.text or "")[:300]
+        return {
+            "http_status": resp.status_code,
+            "status": "DECRYPT_FAILED",
+            "error": f"decrypt gagal (HTTP {resp.status_code}): {snippet}",
+        }
 
 def get_profile(api_key: str, access_token: str, id_token: str) -> dict:
     path = "api/v8/profile"

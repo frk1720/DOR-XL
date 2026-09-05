@@ -233,6 +233,28 @@ def _looks_like_token_error(result) -> bool:
     return False
 
 
+def _quota_error_message(result) -> str:
+    """Susun pesan error kuota dari penyebab asli, bukan frasa generik."""
+    if isinstance(result, dict):
+        status = str(result.get("status", "")).upper()
+        # Dari engsel.send_api_request: decrypt gagal / body tidak valid
+        if status == "DECRYPT_FAILED":
+            detail = result.get("error") or "decrypt respons gagal"
+            return f"Gagal ambil kuota: {detail}"
+        detail = (
+            result.get("message")
+            or result.get("error")
+            or result.get("error_description")
+            or ""
+        )
+        if detail:
+            return f"Gagal ambil kuota: API XL menolak (status={status}): {detail}"
+        return f"Gagal ambil kuota: status tidak SUCCESS (status={status})"
+    if isinstance(result, str):
+        snippet = result[:200]
+        return f"Gagal ambil kuota: respons tidak valid: {snippet}"
+    return "Gagal ambil kuota: respons tidak dikenal"
+
 def get_quota_details(api_key, id_token, subscriber_id=None, refresh_token=None, _retry=True):
     """Ambil data kuota dari API XL.
 
@@ -257,7 +279,7 @@ def get_quota_details(api_key, id_token, subscriber_id=None, refresh_token=None,
         return get_quota_details(api_key, fresh["id_token"], _retry=False)
 
     if not isinstance(result, dict) or result.get("status") != "SUCCESS":
-        raise RuntimeError("Gagal mengambil data kuota")
+        raise RuntimeError(_quota_error_message(result))
     return result.get("data", {}).get("quotas", [])
 
 
